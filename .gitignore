@@ -1,0 +1,46 @@
+
+# Virtual environment
+venv/
+venv_arm64/
+venv_x86_64/
+
+# Python cache files
+__pycache__/
+*.py[cod]
+
+# Distribution / packaging
+dist/
+build/
+*.egg-info/
+
+# PyInstaller
+*.spec
+
+# Logs
+*.log
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# IDE specific files (e.g., for PyCharm or VSCode)
+.idea/
+.vscode/
+
+# Environment variables
+.env
+
+# Downloaded files (if your script downloads files)
+downloads/
+
+# Temporary files
+*.tmp
+
+# FFmpeg binaries (if you're including them in your project)
+ffmpeg_bin/
+
