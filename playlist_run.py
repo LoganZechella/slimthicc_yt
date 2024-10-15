@@ -4,6 +4,7 @@ import yt_dlp
 import tkinter as tk
 from tkinter import filedialog, messagebox
 import platform
+import re
 
 def get_base_path():
     if getattr(sys, 'frozen', False):
@@ -20,7 +21,29 @@ def get_ffmpeg_path():
 
 ffmpeg_path = get_ffmpeg_path()
 
+def sanitize_filename(filename):
+    # Remove invalid characters from filename
+    return re.sub(r'[\\/*?:"<>|]', "", filename)
+
 def download_video(url, download_dir):
+    def custom_filename(d):
+        try:
+            video_title = d['title']
+            # Try to extract artist name from video title
+            match = re.search(r'^(.*?)\s*-\s*(.*?)$', video_title)
+            if match:
+                artist, title = match.groups()
+                # Sanitize and limit the length of title and artist
+                title = sanitize_filename(title)[:100]  # Limit to 100 characters
+                artist = sanitize_filename(artist)[:50]  # Limit to 50 characters
+                return f"{title}-{artist}.%(ext)s"
+            else:
+                # If parsing fails, fall back to the default naming scheme
+                return sanitize_filename(video_title) + '.%(ext)s'
+        except Exception:
+            # If any error occurs, use a very basic fallback
+            return 'video.%(ext)s'
+
     ydl_opts = {
         'format': 'bestaudio/best',
         'postprocessors': [{
@@ -28,7 +51,7 @@ def download_video(url, download_dir):
             'preferredcodec': 'mp3',
             'preferredquality': '192',
         }],
-        'outtmpl': os.path.join(download_dir, '%(title)s.%(ext)s'),
+        'outtmpl': os.path.join(download_dir, custom_filename),
         'ffmpeg_location': ffmpeg_path,
     }
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:

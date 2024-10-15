@@ -42,5 +42,5 @@ downloads/
 *.tmp
 
 # FFmpeg binaries (if you're including them in your project)
-ffmpeg_bin/
+# ffmpeg_bin/
 

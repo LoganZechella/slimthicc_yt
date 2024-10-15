@@ -22,6 +22,12 @@ lipo dist/playlist_run_arm64.app/Contents/MacOS/playlist_run dist/playlist_run_x
 cp -R dist/playlist_run_arm64.app/Contents/Resources dist/playlist_run_universal.app/Contents/
 cp dist/playlist_run_arm64.app/Contents/Info.plist dist/playlist_run_universal.app/Contents/
 
+# Copy ffmpeg binaries
+mkdir -p dist/playlist_run_universal.app/Contents/MacOS/ffmpeg_bin/arm64
+mkdir -p dist/playlist_run_universal.app/Contents/MacOS/ffmpeg_bin/x86_64
+cp ffmpeg_bin/arm64/ffmpeg dist/playlist_run_universal.app/Contents/MacOS/ffmpeg_bin/arm64/
+cp ffmpeg_bin/x86_64/ffmpeg dist/playlist_run_universal.app/Contents/MacOS/ffmpeg_bin/x86_64/
+
 # Clean up
 rm -rf dist/playlist_run_arm64.app dist/playlist_run_x86_64.app
 
