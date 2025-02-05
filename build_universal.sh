@@ -1,28 +1,48 @@
 #!/bin/bash
 
-# Build ARM64 version
-source venv_arm64/bin/activate
-pip install -r requirements.txt
-pyinstaller playlist_run.spec
-mv dist/playlist_run.app dist/playlist_run_arm64.app
-deactivate
+# Exit on error
+set -e
 
-# Build x86_64 version
-source venv_x86_64/bin/activate
-arch -x86_64 pip install -r requirements.txt
-arch -x86_64 pyinstaller playlist_run.spec
-mv dist/playlist_run.app dist/playlist_run_x86_64.app
-deactivate
+echo "🚀 Starting build process for Slim Thicc Command Center..."
 
-# Combine into universal binary
-mkdir -p dist/playlist_run_universal.app/Contents/MacOS
-lipo dist/playlist_run_arm64.app/Contents/MacOS/playlist_run dist/playlist_run_x86_64.app/Contents/MacOS/playlist_run -create -output dist/playlist_run_universal.app/Contents/MacOS/playlist_run
+# Clean previous builds
+echo "🧹 Cleaning previous builds..."
+rm -rf build dist
+rm -rf venv_x86_64 venv_arm64
 
-# Copy other necessary files
-cp -R dist/playlist_run_arm64.app/Contents/Resources dist/playlist_run_universal.app/Contents/
-cp dist/playlist_run_arm64.app/Contents/Info.plist dist/playlist_run_universal.app/Contents/
+# Create virtual environments for both architectures
+echo "🏗️  Creating virtual environments..."
+python3 -m venv venv_x86_64
+python3 -m venv venv_arm64
 
-# Clean up
-rm -rf dist/playlist_run_arm64.app dist/playlist_run_x86_64.app
+# Install dependencies for x86_64
+echo "📦 Installing dependencies for Intel (x86_64)..."
+arch -x86_64 ./venv_x86_64/bin/pip install -r requirements.txt
 
-echo "Universal app created at dist/playlist_run_universal.app"
+# Install dependencies for arm64
+echo "📦 Installing dependencies for Apple Silicon (arm64)..."
+arch -arm64 ./venv_arm64/bin/pip install -r requirements.txt
+
+# Build for x86_64
+echo "🔨 Building Intel (x86_64) version..."
+arch -x86_64 ./venv_x86_64/bin/pyinstaller playlist_run_qt.spec --distpath dist/x86_64
+
+# Build for arm64
+echo "🔨 Building Apple Silicon (arm64) version..."
+arch -arm64 ./venv_arm64/bin/pyinstaller playlist_run_qt.spec --distpath dist/arm64
+
+# Create universal binary
+echo "🔄 Creating universal binary..."
+mkdir -p dist/universal
+cp -R dist/x86_64/"Slim Thicc Command Center.app" dist/universal/
+rm -rf dist/universal/"Slim Thicc Command Center.app"/Contents/MacOS/"Slim Thicc Command Center"
+lipo "dist/x86_64/Slim Thicc Command Center.app/Contents/MacOS/Slim Thicc Command Center" "dist/arm64/Slim Thicc Command Center.app/Contents/MacOS/Slim Thicc Command Center" -create -output "dist/universal/Slim Thicc Command Center.app/Contents/MacOS/Slim Thicc Command Center"
+
+# Create zip archive
+echo "📦 Creating zip archive..."
+cd dist/universal
+zip -r "../Slim Thicc Command Center.app.zip" "Slim Thicc Command Center.app"
+cd ../..
+
+echo "✨ Build complete! Universal app bundle created at dist/universal/Slim Thicc Command Center.app"
+echo "📦 Zip archive created at dist/Slim Thicc Command Center.app.zip"
