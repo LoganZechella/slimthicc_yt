@@ -1,19 +1,49 @@
-# Virtual environment
-venv/
-venv_arm64/
-venv_x86_64/
-
-# Python cache files
+# Python
 __pycache__/
 *.py[cod]
-
-# Distribution / packaging
-dist/
+*$py.class
+*.so
+.Python
 build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
 *.egg-info/
+.installed.cfg
+*.egg
 
-# PyInstaller
+# Virtual Environment
+venv/
+venv_x86_64/
+venv_arm64/
+ENV/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Build artifacts
 *.spec
+*.app
+*.app.zip
+
+# Environment variables
+.env
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
 
 # Logs
 *.log
@@ -27,16 +57,6 @@ build/
 ehthumbs.db
 Thumbs.db
 
-# IDE specific files (e.g., for PyCharm or VSCode)
-.idea/
-.vscode/
-
-# Environment variables
-.env
-
 # Temporary files
 *.tmp
-
-# Downloaded files (if your script downloads files)
-downloads/
 
