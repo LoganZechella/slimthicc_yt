@@ -61,3 +61,30 @@ Thumbs.db
 # Temporary files
 *.tmp
 
+# Web application specific
+node_modules/
+npm-debug.log
+yarn-error.log
+.next/
+out/
+
+# Docker
+.dockerignore
+docker-compose.override.yml
+docker-volume/
+
+# App specific
+/app/downloads/
+/app/tmp/
+/server/downloads/
+/server/tmp/
+youtube.cookies
+.pytube/
+.yt-dlp/
+__pytube__/
+
+# Database
+*.db
+*.sqlite
+*.sqlite3
+
