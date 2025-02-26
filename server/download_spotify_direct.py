@@ -108,22 +108,38 @@ class SimpleSpotifyDownloader:
                 "--no-playlist",  # Don't download playlists
                 "--embed-thumbnail",  # Embed thumbnail in audio file
                 "--embed-metadata",  # Embed metadata
-                "--quiet",  # Less output
-                "--progress"  # Show progress
+                "--progress",  # Show progress
+                "--verbose"    # Added verbose flag to get more information
             ]
             
             logger.info(f"Downloading to: {output_path}")
+            logger.info(f"Running command: {' '.join(cmd)}")
             
-            # Run yt-dlp
-            process = subprocess.run(cmd, capture_output=True, text=True)
+            # Create a log file for detailed debugging
+            log_file_path = self.temp_dir / "download.log"
+            with open(log_file_path, 'a') as log_file:
+                log_file.write(f"\n\n--- Download attempt for {name} - {artist_str} at {time.strftime('%Y-%m-%d %H:%M:%S')} ---\n")
+                log_file.write(f"Command: {' '.join(cmd)}\n\n")
+                
+                # Run yt-dlp with output piped to both console and log file
+                process = subprocess.run(cmd, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                
+                # Log the output and error
+                if process.stdout:
+                    log_file.write(f"STDOUT:\n{process.stdout}\n")
+                if process.stderr:
+                    log_file.write(f"STDERR:\n{process.stderr}\n")
             
-            # Check if download was successful
+            # Log the result
             if process.returncode == 0:
                 logger.info(f"Successfully downloaded: {name} - {artist_str}")
                 return True, str(output_path)
             else:
                 logger.error(f"Failed to download: {name} - {artist_str}")
-                logger.error(f"Error: {process.stderr}")
+                if process.stderr:
+                    # Print the error to console logs for immediate debugging
+                    logger.error(f"Error output: {process.stderr}")
+                logger.error(f"Check {log_file_path} for detailed logs")
                 return False, None
                 
         except Exception as e:

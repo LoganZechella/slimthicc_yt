@@ -10,6 +10,7 @@ from src.config.database import db, ensure_connection
 from datetime import datetime
 from uuid import uuid4
 import os
+import re
 
 logger = logging.getLogger(__name__)
 
@@ -434,6 +435,10 @@ class DownloadTaskManager:
                                     status=DownloadStatus.COMPLETE,
                                     output_path=str(output_path)
                                 )
+                                
+                                # Schedule cleanup of temporary resources
+                                asyncio.create_task(self.cleanup_task(task.id))
+                                
                                 return
                             else:
                                 # Check for Spotify multiple files
@@ -475,6 +480,10 @@ class DownloadTaskManager:
                                     )
                                     
                                     logger.info(f"Task {task.id} marked complete, tracks saved in {spotify_output_dir}")
+                                    
+                                    # Schedule cleanup of temporary resources for Spotify
+                                    asyncio.create_task(self.cleanup_task(task.id))
+                                    
                                     return
                                     
                                 # Regular single file error
@@ -527,8 +536,43 @@ class DownloadTaskManager:
             )
             
     async def cleanup(self):
-        """Clean up resources."""
+        """Clean up resources for all strategies."""
         await self.strategy_selector.cleanup()
+        
+    async def cleanup_task(self, task_id: str):
+        """
+        Clean up resources for a specific task.
+        
+        Args:
+            task_id: ID of the task to clean up
+        """
+        logger.info(f"Cleaning up resources for task {task_id}")
+        try:
+            # Get the task from memory or database
+            task = await self.get_task(task_id)
+            
+            if not task:
+                logger.warning(f"Task {task_id} not found for cleanup")
+                return
+            
+            # Only clean up temporary resources, not the final output files
+            # Those will be handled by the router's cleanup_after_download function
+            
+            # Get the strategy used for the download
+            url = task.url if hasattr(task, 'url') else None
+            if url:
+                strategy_result = await self.strategy_selector.get_strategy(url)
+                if strategy_result:
+                    strategy, _ = strategy_result
+                    
+                    # Ask the strategy to clean up its temporary resources
+                    # This won't delete the final output files
+                    await strategy.cleanup()
+                    
+            logger.info(f"Cleanup completed for task {task_id}")
+                
+        except Exception as e:
+            logger.error(f"Error cleaning up task {task_id}: {e}")
         
 # Create a global instance
 download_task_manager = DownloadTaskManager() 
