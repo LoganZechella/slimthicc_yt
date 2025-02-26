@@ -34,20 +34,26 @@ export const DownloadForm = () => {
   const handleSubmit = async (e: FormEvent) => {
     e.preventDefault()
     setError(null)
+    console.log('Form submission started', { url, format, quality })
 
     if (!url.trim()) {
       setError('Please enter a URL')
+      console.log('URL validation failed: empty URL')
       return
     }
 
     try {
       setIsSubmitting(true)
-      await dispatch(startDownload({ url, format, quality }))
+      console.log('Starting download process with dispatch', { url, format, quality })
+      const result = await dispatch(startDownload({ url, format, quality }))
+      console.log('Download dispatch result:', result)
       setUrl('')
     } catch (err) {
+      console.error('Error during download submission:', err)
       setError(err instanceof Error ? err.message : 'Failed to start download')
     } finally {
       setIsSubmitting(false)
+      console.log('Form submission completed')
     }
   }
 

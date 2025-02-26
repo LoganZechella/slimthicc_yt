@@ -79,34 +79,94 @@ export const startDownload = createAsyncThunk(
   'downloads/startDownload',
   async (request: { url: string; format?: DownloadFormat; quality?: AudioQuality }, { dispatch }) => {
     try {
+      console.log('Starting download with request:', request);
       const validUrl = ensureValidUrl(request.url)
+      console.log('Validated URL:', validUrl);
       
-      const data = await makeRequest('/api/v1/downloads/', {
-        method: 'POST',
-        body: JSON.stringify({
-          url: validUrl,
-          format: request.format || 'mp3',
-          quality: request.quality || 'HIGH'
-        })
-      })
+      console.log('Making API request to /api/v1/downloads/');
       
-      const taskId = data.task_id as string
+      let response;
+      try {
+        response = await fetch('/api/v1/downloads/', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            url: validUrl,
+            format: request.format || 'mp3',
+            quality: request.quality || 'HIGH'
+          })
+        });
+        console.log('API response received with status:', response.status);
+      } catch (fetchError) {
+        console.error('Network error during fetch:', fetchError);
+        throw new Error(`Network error: ${fetchError instanceof Error ? fetchError.message : String(fetchError)}`);
+      }
+      
+      let data;
+      try {
+        // Check if response is ok before trying to parse JSON
+        if (!response.ok) {
+          const errorText = await response.text();
+          console.error('API error response:', errorText);
+          throw new Error(`Request failed with status ${response.status}: ${errorText}`);
+        }
+        
+        data = await response.json();
+        console.log('API response data:', data);
+      } catch (jsonError) {
+        console.error('Error parsing response:', jsonError);
+        throw new Error(`Failed to parse response: ${jsonError instanceof Error ? jsonError.message : String(jsonError)}`);
+      }
+      
+      // Validate required fields
+      if (!data) {
+        console.error('Invalid response data:', data);
+        throw new Error('Server returned invalid response: empty data');
+      }
+      
+      // Use either task_id or id field (task_id is for legacy compatibility)
+      let taskId = data.task_id || data.id;
+      
+      // If neither id nor task_id is present, try to get it from the URL
+      if (!taskId && data.url) {
+        // Try to extract ID from the URL for Spotify or YouTube
+        const urlObj = new URL(data.url);
+        const pathParts = urlObj.pathname.split('/');
+        if (pathParts.length > 2) {
+          taskId = pathParts[pathParts.length - 1];
+          console.log('Extracted task ID from URL:', taskId);
+        }
+      }
+      
+      // Last resort: generate a random ID
+      if (!taskId) {
+        taskId = 'task_' + Math.random().toString(36).substring(2, 15);
+        console.warn('Generated random task ID as none was provided:', taskId);
+      }
+      
+      console.log('Using task ID:', taskId);
 
-      // Create initial task state
+      // Create initial task state with title from response if available
       dispatch(taskCreated({
         id: taskId,
         url: validUrl,
+        title: data.title || undefined,
+        author: data.artists || data.author || undefined,
         status: 'queued',
         progress: 0,
         format: request.format || 'mp3',
         quality: request.quality || 'HIGH',
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString()
-      }))
+      }));
 
       // Subscribe to WebSocket updates
       try {
+        console.log('Attempting to connect to WebSocket for task:', taskId);
         await websocketService.subscribeToTask(taskId, (progress: number, status: string) => {
+          console.log(`WebSocket update for task ${taskId}:`, { progress, status });
           if (isValidTaskStatus(status)) {
             dispatch(taskUpdated({
               id: taskId,
@@ -115,13 +175,15 @@ export const startDownload = createAsyncThunk(
               updatedAt: new Date().toISOString()
             }))
           }
-        })
+        });
+        console.log('WebSocket subscription successful');
       } catch (error) {
         console.error('Failed to subscribe to WebSocket updates:', error)
       }
 
       // Get initial task status
       try {
+        console.log('Getting initial task status for:', taskId);
         await dispatch(getTaskStatus(taskId))
       } catch (error) {
         console.error('Failed to get initial task status:', error)
@@ -129,6 +191,7 @@ export const startDownload = createAsyncThunk(
 
       return taskId
     } catch (error) {
+      console.error('Error in startDownload thunk:', error);
       if (error instanceof Error) {
         throw error
       }

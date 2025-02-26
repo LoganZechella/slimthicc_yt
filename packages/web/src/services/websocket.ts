@@ -1,107 +1,131 @@
 export class WebSocketService {
   private connections: Map<string, WebSocket> = new Map()
-  private callbacks: Map<string, (progress: number, status: string, error?: string, details?: any) => void> = new Map()
-  private maxReconnectAttempts = 5
-  private reconnectDelay = 1000 // 1 second
+  private callbacks: Map<string, Function> = new Map()
+  private baseUrl: string
 
   constructor() {
-    // No need for baseUrl as we'll use relative paths with Vite proxy
+    // Determine WebSocket URL - same host as current page but with WebSocket protocol
+    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
+    const host = window.location.host
+    this.baseUrl = `${protocol}//${host}/api/v1/downloads`
+    
+    console.log('WebSocket service initialized with base URL:', this.baseUrl)
   }
 
-  private getWebSocketUrl(taskId: string): string {
-    // Get the current protocol (http or https)
-    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    // Get the host (hostname:port)
-    const host = window.location.host;
-    // Construct the WebSocket URL
-    return `${protocol}//${host}/api/v1/downloads/${taskId}/ws`;
-  }
-
-  async subscribeToTask(taskId: string, callback: (progress: number, status: string, error?: string, details?: any) => void) {
-    try {
-      console.log(`Connecting to WebSocket: ${this.getWebSocketUrl(taskId)}`)
-      const socket = new WebSocket(this.getWebSocketUrl(taskId))
-      let reconnectAttempts = 0
-
-      socket.onopen = () => {
-        console.log('WebSocket connected successfully')
-        this.connections.set(taskId, socket)
-        this.callbacks.set(taskId, callback)
-      }
-
-      socket.onmessage = (event) => {
-        try {
-          const data = JSON.parse(event.data)
-          if (data.type === 'progress') {
-            // Extract additional details if available
-            const details = {
-              strategy: data.strategy,
-              statusMessage: data.statusMessage,
-              fileInfo: data.fileInfo,
-              ...data.details
-            };
-            
-            // Call the callback with all available information
-            callback(data.progress, data.status, data.error, details)
-            
-            // Log detailed information for debugging
-            console.log(`Task ${taskId} update:`, {
-              progress: data.progress,
-              status: data.status,
-              details
-            });
-          }
-        } catch (error) {
-          console.error('Error processing WebSocket message:', error)
-        }
-      }
-
-      socket.onerror = (error) => {
-        console.error('WebSocket error:', error)
-        if (reconnectAttempts < this.maxReconnectAttempts) {
-          reconnectAttempts++
-          console.log(`Attempting to reconnect (${reconnectAttempts}/${this.maxReconnectAttempts})...`)
-          setTimeout(() => {
-            this.subscribeToTask(taskId, callback)
-          }, this.reconnectDelay * reconnectAttempts)
-        } else {
-          console.error('Max reconnection attempts reached')
-          callback(0, 'error', 'Connection failed after multiple attempts')
-        }
-      }
-
-      socket.onclose = () => {
-        console.log('WebSocket connection closed')
-        this.connections.delete(taskId)
-        this.callbacks.delete(taskId)
-      }
-
-    } catch (error) {
-      console.error('Failed to subscribe to task:', error)
-      throw error
+  subscribeToTask(taskId: string, callback: Function): Promise<void> {
+    // If already subscribed, just update the callback
+    if (this.callbacks.has(taskId)) {
+      console.log(`Updating existing callback for task ${taskId}`)
+      this.callbacks.set(taskId, callback)
+      return Promise.resolve()
     }
+
+    const wsUrl = `${this.baseUrl}/${taskId}/ws`
+    console.log(`Connecting to WebSocket: ${wsUrl}`)
+
+    // Store the callback
+    this.callbacks.set(taskId, callback)
+
+    // Create a new WebSocket connection
+    return new Promise((resolve, reject) => {
+      try {
+        const ws = new WebSocket(wsUrl)
+        
+        ws.onopen = () => {
+          console.log(`WebSocket connection opened for task ${taskId}`)
+          this.connections.set(taskId, ws)
+          resolve()
+        }
+        
+        ws.onmessage = (event) => {
+          console.log(`WebSocket message received for task ${taskId}:`, event.data)
+          try {
+            const data = JSON.parse(event.data)
+            const { progress, status, error, details } = data
+            
+            // Log the data for debugging
+            console.log(`Task ${taskId} update:`, { progress, status, error, details })
+            
+            // Special handling for complete status
+            if (status === 'complete') {
+              console.log(`Task ${taskId} is complete!`, data)
+              // Force progress to 100% on completion
+              const callback = this.callbacks.get(taskId)
+              if (callback) {
+                callback(100, status, error, details)
+              }
+            } else {
+              // Call the callback with the update
+              const callback = this.callbacks.get(taskId)
+              if (callback) {
+                callback(progress, status, error, details)
+              }
+            }
+          } catch (err) {
+            console.error(`Error processing WebSocket message for task ${taskId}:`, err, event.data)
+          }
+        }
+        
+        ws.onerror = (error) => {
+          console.error(`WebSocket error for task ${taskId}:`, error)
+          // Do not reject here, try to handle errors gracefully
+        }
+        
+        ws.onclose = (event) => {
+          console.log(`WebSocket connection closed for task ${taskId}:`, event.code, event.reason)
+          
+          // If connection was closed abnormally and we still care about this task
+          if (event.code !== 1000 && this.callbacks.has(taskId)) {
+            console.log(`Attempting to reconnect WebSocket for task ${taskId}`)
+            // Try to reconnect after a short delay
+            setTimeout(() => {
+              this.subscribeToTask(taskId, this.callbacks.get(taskId) as Function)
+                .catch(err => console.error(`Failed to reconnect WebSocket for task ${taskId}:`, err))
+            }, 2000)
+          } else {
+            // Clean up if closed normally
+            this.connections.delete(taskId)
+          }
+        }
+      } catch (error) {
+        console.error(`Error creating WebSocket for task ${taskId}:`, error)
+        reject(error)
+      }
+    })
   }
 
   unsubscribeFromTask(taskId: string): void {
-    try {
-      if (this.connections.has(taskId)) {
-        const socket = this.connections.get(taskId)
-        if (socket && socket.readyState === WebSocket.OPEN) {
-          socket.send(JSON.stringify({ type: 'unsubscribe', taskId }))
-        }
-        this.connections.delete(taskId)
-        this.callbacks.delete(taskId)
+    const ws = this.connections.get(taskId)
+    if (ws) {
+      // Send an unsubscribe message if the connection is open
+      if (ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ action: 'unsubscribe' }))
       }
-    } catch (error) {
-      console.error('Error unsubscribing from task:', error)
+      
+      // Close the connection
+      ws.close()
+      
+      // Remove from maps
+      this.connections.delete(taskId)
+      this.callbacks.delete(taskId)
+      
+      console.log(`Unsubscribed from task ${taskId}`)
     }
   }
 
   disconnect(): void {
+    // Close all connections
+    this.connections.forEach((ws, taskId) => {
+      ws.close()
+      console.log(`Closed WebSocket for task ${taskId}`)
+    })
+    
+    // Clear maps
     this.connections.clear()
     this.callbacks.clear()
+    
+    console.log('Disconnected all WebSocket connections')
   }
 }
 
-// Create a singleton instance
 export const websocketService = new WebSocketService() 

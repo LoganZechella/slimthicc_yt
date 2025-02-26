@@ -7,15 +7,35 @@ from typing import Optional
 
 logger = logging.getLogger(__name__)
 
-class MongoDB:
-    client: Optional[AsyncIOMotorClient] = None
-    db: Optional[Database] = None
+class DatabaseClient:
+    def __init__(self):
+        self._client = None
+        self._db = None
+        self.connected = False
+        logger.info("Initialized database client")
     
     @property
-    def is_connected(self) -> bool:
-        return self.client is not None and self.db is not None
+    def client(self):
+        return self._client
+    
+    @client.setter
+    def client(self, value):
+        self._client = value
+    
+    @property
+    def db(self) -> Database:
+        return self._db
+    
+    @db.setter
+    def db(self, value):
+        self._db = value
+    
+    @property
+    def is_connected(self):
+        return self.connected and self._client is not None
 
-db = MongoDB()
+# Create a database instance
+db = DatabaseClient()
 
 async def connect_to_mongo():
     try:
@@ -26,9 +46,13 @@ async def connect_to_mongo():
         if db.client:
             await close_mongo_connection()
         
+        # Use the MongoDB Atlas URL directly
+        mongo_url = settings.MONGODB_URL
+        logger.info(f"Connecting to MongoDB Atlas cluster")
+        
         # Create new client with proper settings
         db.client = AsyncIOMotorClient(
-            settings.MONGODB_URL,
+            mongo_url,
             serverSelectionTimeoutMS=5000,
             connectTimeoutMS=10000,
             socketTimeoutMS=None,  # No timeout for operations
@@ -43,8 +67,9 @@ async def connect_to_mongo():
         
         # Set database
         db.db = db.client[settings.MONGODB_DB_NAME]
+        db.connected = True
         
-        logger.info(f"Connected to MongoDB at {settings.MONGODB_URL}")
+        logger.info(f"Connected to MongoDB Atlas at {mongo_url.split('@')[1] if '@' in mongo_url else 'mongodb atlas'}")
     except Exception as e:
         logger.error(f"Failed to connect to MongoDB: {e}")
         if db.client:
@@ -57,6 +82,7 @@ async def close_mongo_connection():
             db.client.close()
             db.client = None
             db.db = None
+            db.connected = False
             logger.info("Closed MongoDB connection")
     except Exception as e:
         logger.error(f"Error closing MongoDB connection: {e}")

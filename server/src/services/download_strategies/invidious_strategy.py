@@ -1,15 +1,20 @@
 import asyncio
 from pathlib import Path
-from typing import Dict, Optional, AsyncGenerator, List
+from typing import Dict, Optional, AsyncGenerator, List, Tuple
 import aiohttp
 import logging
 import json
 import tempfile
 import random
-from urllib.parse import quote
+import time
+import shutil
+from urllib.parse import quote, urlparse
 from .base import DownloadStrategy
 from src.services.ffmpeg_manager import ffmpeg_manager
 from src.config.settings import settings
+import re
+import os
+from urllib.parse import parse_qs
 
 logger = logging.getLogger(__name__)
 
@@ -17,99 +22,275 @@ class InvidiousStrategy(DownloadStrategy):
     """YouTube download strategy using Invidious API."""
     
     def __init__(self):
+        """Initialize the Invidious strategy."""
+        super().__init__()
         self.temp_files = []
-        self.instances = [
+        self.session = None
+        self._instances = None  # Lazy load instances
+        self._instances_initialized = False
+        self._default_instances = [
             "https://invidious.snopyta.org",
             "https://invidious.kavin.rocks",
-            "https://invidious.namazso.eu",
-            "https://inv.riverside.rocks",
+            "https://vid.puffyan.us",
             "https://yt.artemislena.eu",
-            "https://invidious.flokinet.to",
-            "https://invidious.projectsegfau.lt",
-            "https://inv.vern.cc",
             "https://invidious.nerdvpn.de",
-            "https://inv.bp.projectsegfau.lt",
-            "https://invidious.lunar.icu"
+            "https://inv.riverside.rocks",
+            "https://invidious.protokolla.fi"
         ]
-        self.current_instance_index = 0
-        self.session = None
-        self.instance_health = {instance: True for instance in self.instances}
-        self.last_request_time = {}
-        self.min_request_interval = 2.0  # Minimum seconds between requests to same instance
         
-    async def _get_session(self) -> aiohttp.ClientSession:
+        # Add additional instances from settings
+        additional_instances = getattr(settings, "INVIDIOUS_FALLBACK_INSTANCES", [])
+        if additional_instances:
+            logger.info(f"Loaded {len(additional_instances)} additional Invidious instances from settings")
+        
+        # Don't initialize instances immediately to avoid startup errors
+        logger.info("Initialized InvidiousStrategy with lazy loading")
+        
+    async def _initialize_instances(self):
+        """Lazy initialize instances when needed."""
+        if self._instances_initialized:
+            return
+            
+        try:
+            self._instances = self._default_instances.copy()
+            
+            # Add additional instances from settings
+            additional_instances = getattr(settings, "INVIDIOUS_FALLBACK_INSTANCES", [])
+            if additional_instances:
+                self._instances.extend(additional_instances)
+                
+            # Remove duplicates while preserving order
+            self._instances = list(dict.fromkeys(self._instances))
+            
+            logger.info(f"Initialized InvidiousStrategy with {len(self._instances)} instances")
+            self._instances_initialized = True
+        except Exception as e:
+            logger.error(f"Error initializing Invidious instances: {e}")
+            # Fallback to default instances
+            self._instances = self._default_instances.copy()
+            self._instances_initialized = True
+        
+    async def _get_session(self):
         """Get or create aiohttp session."""
         if self.session is None or self.session.closed:
-            timeout = aiohttp.ClientTimeout(total=30)
-            self.session = aiohttp.ClientSession(timeout=timeout)
+            self.session = aiohttp.ClientSession(
+                headers={
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
+                }
+            )
         return self.session
         
-    async def _get_healthy_instance(self) -> Optional[str]:
-        """Get a healthy Invidious instance."""
-        # Shuffle instances to distribute load
-        available_instances = [i for i, healthy in self.instance_health.items() if healthy]
-        if not available_instances:
-            # Reset health status if all instances are marked unhealthy
-            self.instance_health = {instance: True for instance in self.instances}
-            available_instances = self.instances
-            
-        # Try each instance
-        for instance in available_instances:
+    async def _get_random_instance(self):
+        """Get a random Invidious instance."""
+        await self._initialize_instances()
+        return random.choice(self._instances)
+        
+    async def _periodic_health_check(self):
+        """Periodically check health of all instances."""
+        while True:
             try:
-                # Check if we need to wait before using this instance
-                last_time = self.last_request_time.get(instance, 0)
-                time_since_last = asyncio.get_event_loop().time() - last_time
-                if time_since_last < self.min_request_interval:
-                    await asyncio.sleep(self.min_request_interval - time_since_last)
-                    
-                # Test instance health
-                session = await self._get_session()
-                async with session.get(f"{instance}/api/v1/stats", timeout=5) as response:
-                    if response.status == 200:
-                        self.last_request_time[instance] = asyncio.get_event_loop().time()
-                        return instance
-                    else:
-                        self.instance_health[instance] = False
+                logger.info("Running periodic health check of Invidious instances")
+                now = time.time()
+                
+                # Check instances that haven't been used in a while
+                for instance in self._instances:
+                    last_success = self.instance_stats[instance]['last_success']
+                    if now - last_success > self.health_check_interval:
+                        await self._check_instance_health(instance)
+                        
+                # Update last health check time
+                self.last_health_check = now
+                
+                # Wait before next check
+                await asyncio.sleep(self.health_check_interval)
             except Exception as e:
-                logger.error(f"Instance {instance} health check failed: {e}")
-                self.instance_health[instance] = False
+                logger.error(f"Error in periodic health check: {e}")
+                await asyncio.sleep(60)  # Wait a minute and try again
+                
+    async def _check_instance_health(self, instance: str) -> bool:
+        """Check health of a specific instance."""
+        try:
+            session = await self._get_session()
+            async with session.get(f"{instance}/api/v1/stats", timeout=5) as response:
+                if response.status == 200:
+                    self.instance_health[instance] = True
+                    self.instance_stats[instance]['success'] += 1
+                    self.instance_stats[instance]['last_success'] = time.time()
+                    logger.debug(f"Instance {instance} is healthy")
+                    return True
+                else:
+                    self.instance_health[instance] = False
+                    self.instance_stats[instance]['failure'] += 1
+                    logger.warning(f"Instance {instance} returned status {response.status}")
+                    return False
+        except Exception as e:
+            self.instance_health[instance] = False
+            self.instance_stats[instance]['failure'] += 1
+            logger.warning(f"Instance {instance} health check failed: {e}")
+            return False
+        
+    async def _get_best_instance(self) -> Tuple[Optional[str], bool]:
+        """Get the best Invidious instance based on health and performance."""
+        # First refresh health status if needed
+        current_time = time.time()
+        if current_time - self.last_health_check > self.health_check_interval:
+            await self._periodic_health_check()
+            
+        # Filter healthy instances
+        healthy_instances = [i for i, healthy in self.instance_health.items() if healthy]
+        
+        if not healthy_instances:
+            # If all instances are unhealthy, try checking a random subset
+            logger.warning("All instances marked unhealthy, checking a random subset")
+            sample_size = min(3, len(self._instances))
+            for instance in random.sample(self._instances, sample_size):
+                is_healthy = await self._check_instance_health(instance)
+                if is_healthy:
+                    healthy_instances.append(instance)
+                    
+            # If still no healthy instances, reset all to healthy and try again
+            if not healthy_instances:
+                logger.warning("Resetting all instances to healthy as last resort")
+                self.instance_health = {instance: True for instance in self._instances}
+                healthy_instances = self._instances
+                return random.choice(healthy_instances), False
+                
+        # Sort by success rate and recency of last success
+        def instance_score(instance):
+            stats = self.instance_stats[instance]
+            total = stats['success'] + stats['failure']
+            success_rate = stats['success'] / max(total, 1)
+            recency = max(0, min(1, (current_time - stats['last_success']) / 3600))  # Weight recent successes higher
+            return success_rate * (1 - recency * 0.5)  # Scale recency impact
+            
+        sorted_instances = sorted(healthy_instances, key=instance_score, reverse=True)
+        
+        # Get the best instance that respects rate limiting
+        for instance in sorted_instances:
+            # Check if we need to wait before using this instance
+            last_time = self.last_request_time.get(instance, 0)
+            time_since_last = current_time - last_time
+            
+            if time_since_last < self.min_request_interval:
+                # If top instance requires waiting but others don't, consider alternatives
                 continue
                 
-        logger.error("No healthy Invidious instances available")
-        return None
+            # Found a good instance
+            return instance, True
+            
+        # If all good instances need waiting, use the best one with a delay
+        if sorted_instances:
+            best_instance = sorted_instances[0]
+            last_time = self.last_request_time.get(best_instance, 0)
+            time_since_last = current_time - last_time
+            
+            # Need to delay
+            if time_since_last < self.min_request_interval:
+                return best_instance, False
+            return best_instance, True
+            
+        return None, False
         
     async def _make_api_request(self, endpoint: str, method: str = "GET", **kwargs) -> Optional[Dict]:
         """Make an API request to a healthy Invidious instance."""
-        max_retries = 3
         retry_count = 0
+        last_error = None
+        used_instances = set()
         
-        while retry_count < max_retries:
-            instance = await self._get_healthy_instance()
+        while retry_count < self.max_retries:
+            # Get the best available instance
+            instance, ready = await self._get_best_instance()
+            
             if not instance:
                 logger.error("No healthy Invidious instances available")
                 return None
                 
+            # Skip instances we've already tried in this request
+            if instance in used_instances and len(used_instances) < len(self._instances):
+                retry_count += 0.5  # Partial retry count for duplicate instances
+                continue
+                
+            used_instances.add(instance)
+                
+            # If the instance needs a delay, wait
+            if not ready:
+                last_time = self.last_request_time.get(instance, 0)
+                time_since_last = asyncio.get_event_loop().time() - last_time
+                if time_since_last < self.min_request_interval:
+                    wait_time = self.min_request_interval - time_since_last
+                    logger.debug(f"Waiting {wait_time:.2f}s before using instance {instance}")
+                    await asyncio.sleep(wait_time)
+                    
             try:
                 session = await self._get_session()
                 url = f"{instance}/api/v1/{endpoint}"
                 
-                async with getattr(session, method.lower())(url, **kwargs) as response:
+                # Add instance domain as referer to reduce chance of being blocked
+                instance_domain = urlparse(instance).netloc
+                headers = kwargs.pop('headers', {})
+                headers['Referer'] = f"https://{instance_domain}/"
+                
+                async with getattr(session, method.lower())(url, headers=headers, **kwargs) as response:
                     if response.status == 200:
-                        return await response.json()
+                        # Update instance stats
+                        self.instance_stats[instance]['success'] += 1
+                        self.instance_stats[instance]['last_success'] = time.time()
+                        self.last_request_time[instance] = time.time()
+                        
+                        try:
+                            return await response.json()
+                        except json.JSONDecodeError:
+                            # If not valid JSON, try to get text
+                            text = await response.text()
+                            logger.error(f"Invalid JSON response from {instance}: {text[:100]}...")
+                            self.instance_stats[instance]['failure'] += 1
+                            retry_count += 1
+                            continue
+                            
                     elif response.status == 429:  # Rate limit
                         retry_delay = float(response.headers.get('Retry-After', 5))
+                        logger.warning(f"Rate limited by {instance}, waiting {retry_delay}s")
                         await asyncio.sleep(retry_delay)
+                        retry_count += 0.5  # Only count rate limits as partial retries
+                        
                     elif response.status >= 500:  # Server error
+                        logger.warning(f"Server error {response.status} from {instance}")
                         self.instance_health[instance] = False
+                        self.instance_stats[instance]['failure'] += 1
+                        retry_count += 1
+                        
                     else:
-                        logger.error(f"API request failed with status {response.status}")
-                        return None
+                        logger.error(f"API request to {instance} failed with status {response.status}")
+                        self.instance_stats[instance]['failure'] += 1
+                        retry_count += 1
+                        
+                        # Try to get error response
+                        try:
+                            error_text = await response.text()
+                            logger.debug(f"Error response: {error_text[:200]}...")
+                        except:
+                            pass
+                            
+            except asyncio.TimeoutError:
+                logger.warning(f"Request to {instance} timed out")
+                self.instance_stats[instance]['failure'] += 1
+                last_error = "Request timed out"
+                retry_count += 1
+                
             except Exception as e:
                 logger.error(f"API request to {instance} failed: {e}")
                 self.instance_health[instance] = False
+                self.instance_stats[instance]['failure'] += 1
+                last_error = str(e)
+                retry_count += 1
                 
-            retry_count += 1
-            await asyncio.sleep(1)
+            # Small delay between retries
+            await asyncio.sleep(0.5)
+            
+        if last_error:
+            logger.error(f"All retries failed for API request: {last_error}")
+        else:
+            logger.error("All retries failed for API request")
             
         return None
         
@@ -131,7 +312,6 @@ class InvidiousStrategy(DownloadStrategy):
             
     def _extract_video_id(self, url: str) -> Optional[str]:
         """Extract video ID from YouTube URL."""
-        import re
         patterns = [
             r'(?:v=|\/)([0-9A-Za-z_-]{11}).*',
             r'(?:embed\/)([0-9A-Za-z_-]{11})',
@@ -153,11 +333,11 @@ class InvidiousStrategy(DownloadStrategy):
             data = await self._make_api_request(f"videos/{video_id}")
             if data:
                 return {
-                    'title': data.get('title'),
-                    'author': data.get('author'),
-                    'length': data.get('lengthSeconds'),
-                    'views': data.get('viewCount'),
-                    'thumbnail_url': data.get('videoThumbnails', [{}])[0].get('url'),
+                    'title': data.get('title', 'Unknown'),
+                    'author': data.get('author', 'Unknown'),
+                    'length': data.get('lengthSeconds', 0),
+                    'views': data.get('viewCount', 0),
+                    'thumbnail_url': data.get('videoThumbnails', [{}])[0].get('url', ''),
                     'age_restricted': data.get('age_restricted', False)
                 }
             return {}
@@ -188,10 +368,11 @@ class InvidiousStrategy(DownloadStrategy):
             # Sort by bitrate and get best quality
             audio_formats.sort(key=lambda x: x.get('bitrate', 0), reverse=True)
             best_audio = audio_formats[0]
+            logger.info(f"Selected audio format: {best_audio.get('type')} at {best_audio.get('bitrate', 0)//1000}kbps")
             
             # Create temp directory
             with tempfile.TemporaryDirectory() as temp_dir:
-                temp_path = Path(temp_dir) / f"{video_id}.{best_audio['container']}"
+                temp_path = Path(temp_dir) / f"{video_id}.{best_audio.get('container', 'webm')}"
                 self.temp_files.append(temp_path)
                 
                 # Start download
@@ -203,57 +384,142 @@ class InvidiousStrategy(DownloadStrategy):
                     total_size = 0
                     downloaded = 0
                     
-                    async with session.get(best_audio['url']) as response:
-                        if response.status != 200:
-                            yield {'status': 'error', 'error': f'Download failed with status {response.status}', 'progress': 0}
+                    # Maximum retries for download
+                    max_dl_retries = 3
+                    dl_retry = 0
+                    
+                    while dl_retry < max_dl_retries:
+                        try:
+                            # Report retry attempt if not first try
+                            if dl_retry > 0:
+                                logger.info(f"Retry {dl_retry}/{max_dl_retries} for downloading audio")
+                                yield {'status': 'downloading', 'progress': 0, 'message': f"Retry {dl_retry}/{max_dl_retries}"}
+                                
+                            audio_url = best_audio.get('url')
+                            if not audio_url:
+                                logger.error("No URL found in audio format data")
+                                yield {'status': 'error', 'error': 'No download URL available', 'progress': 0}
+                                return
+                                
+                            # Replace hostname for proxied content if needed
+                            instance, _ = await self._get_best_instance()
+                            if instance:
+                                instance_domain = urlparse(instance).netloc
+                                # If URL is relative, make it absolute using instance domain
+                                if audio_url.startswith('/'):
+                                    audio_url = f"{instance}{audio_url}"
+                                    
+                            headers = {
+                                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36',
+                                'Referer': f"https://{urlparse(instance).netloc if instance else 'youtube.com'}/watch?v={video_id}",
+                                'Accept': '*/*',
+                                'Accept-Language': 'en-US,en;q=0.9',
+                                'Accept-Encoding': 'gzip, deflate, br',
+                                'Range': 'bytes=0-'
+                            }
+                            
+                            async with session.get(audio_url, headers=headers) as response:
+                                if response.status not in (200, 206):
+                                    logger.warning(f"Download failed with status {response.status}, trying again")
+                                    dl_retry += 1
+                                    await asyncio.sleep(1)
+                                    continue
+                                    
+                                total_size = int(response.headers.get('content-length', 0))
+                                
+                                with open(temp_path, 'wb') as f:
+                                    async for chunk in response.content.iter_chunked(8192):
+                                        if not chunk:
+                                            break
+                                        f.write(chunk)
+                                        downloaded += len(chunk)
+                                        if total_size:
+                                            progress = (downloaded / total_size) * 90
+                                            yield {'status': 'downloading', 'progress': progress}
+                                
+                                # Check if the file was downloaded completely
+                                if total_size > 0 and downloaded < total_size * 0.95:
+                                    logger.warning(f"Incomplete download: {downloaded}/{total_size} bytes")
+                                    dl_retry += 1
+                                    await asyncio.sleep(1)
+                                    continue
+                                    
+                                # Successfully downloaded
+                                break
+                                
+                        except Exception as e:
+                            logger.error(f"Error during download attempt {dl_retry + 1}: {e}")
+                            dl_retry += 1
+                            await asyncio.sleep(1)
+                    
+                    # Check if all retries were exhausted        
+                    if dl_retry >= max_dl_retries:
+                        logger.error(f"All download retries failed")
+                        yield {'status': 'error', 'error': 'Download failed after multiple retries', 'progress': 0}
+                        return
+                        
+                    # Check if file exists and has content
+                    if not temp_path.exists() or temp_path.stat().st_size == 0:
+                        logger.error("Downloaded file is empty or missing")
+                        yield {'status': 'error', 'error': 'Downloaded file is empty', 'progress': 0}
+                        return
+                        
+                    # Convert to desired format
+                    yield {'status': 'processing', 'progress': 95}
+                    
+                    try:
+                        # Ensure output directory exists
+                        output_path.parent.mkdir(parents=True, exist_ok=True)
+                        
+                        await ffmpeg_manager.convert_audio(
+                            input_path=str(temp_path),
+                            output_path=str(output_path),
+                            bitrate=quality
+                        )
+                        
+                        # Verify output file exists and has content
+                        if not output_path.exists() or output_path.stat().st_size == 0:
+                            logger.error("Converted file is empty or missing")
+                            yield {'status': 'error', 'error': 'Conversion failed - output file is empty', 'progress': 0}
                             return
                             
-                        total_size = int(response.headers.get('content-length', 0))
+                    except Exception as e:
+                        logger.error(f"Error during conversion: {e}")
+                        yield {'status': 'error', 'error': f'Conversion failed: {str(e)}', 'progress': 0}
+                        return
                         
-                        with open(temp_path, 'wb') as f:
-                            async for chunk in response.content.iter_chunked(8192):
-                                if not chunk:
-                                    break
-                                f.write(chunk)
-                                downloaded += len(chunk)
-                                if total_size:
-                                    progress = (downloaded / total_size) * 90
-                                    yield {'status': 'downloading', 'progress': progress}
-                                    
+                    # Successfully completed
+                    yield {'status': 'complete', 'progress': 100}
+                    
                 except Exception as e:
                     logger.error(f"Error downloading audio: {e}")
                     yield {'status': 'error', 'error': f'Download failed: {str(e)}', 'progress': 0}
-                    return
                     
-                # Convert to desired format
-                yield {'status': 'processing', 'progress': 95}
-                
-                try:
-                    await ffmpeg_manager.convert_audio(
-                        input_path=str(temp_path),
-                        output_path=str(output_path),
-                        bitrate=quality
-                    )
-                except Exception as e:
-                    logger.error(f"Error during conversion: {e}")
-                    yield {'status': 'error', 'error': f'Conversion failed: {str(e)}', 'progress': 0}
-                    return
-                    
-                yield {'status': 'complete', 'progress': 100}
-                
         except Exception as e:
             logger.error(f"Error downloading with Invidious: {e}")
             yield {'status': 'error', 'error': str(e), 'progress': 0}
             
     async def cleanup(self):
-        """Clean up temporary files."""
-        for temp_file in self.temp_files:
-            try:
-                if temp_file.exists():
-                    temp_file.unlink()
-            except Exception as e:
-                logger.error(f"Error cleaning up temp file {temp_file}: {e}")
-        self.temp_files.clear()
-        
-        if self.session and not self.session.closed:
-            await self.session.close() 
+        """Clean up temporary files and close session."""
+        try:
+            for temp_file in self.temp_files:
+                try:
+                    if isinstance(temp_file, Path) and temp_file.exists():
+                        if temp_file.is_dir():
+                            shutil.rmtree(temp_file, ignore_errors=True)
+                        else:
+                            temp_file.unlink(missing_ok=True)
+                except Exception as e:
+                    logger.error(f"Error cleaning up temp file {temp_file}: {e}")
+                    
+            self.temp_files.clear()
+            
+            # Close session if exists
+            if self.session and not self.session.closed:
+                try:
+                    await self.session.close()
+                    logger.debug("Closed aiohttp session")
+                except Exception as e:
+                    logger.error(f"Error closing session: {e}")
+        except Exception as e:
+            logger.error(f"Error in cleanup: {e}") 

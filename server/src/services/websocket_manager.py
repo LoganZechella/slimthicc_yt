@@ -1,89 +1,112 @@
-from typing import Dict, Set, Any, Optional
-from fastapi import WebSocket
-import json
 import logging
+from fastapi import WebSocket
+from typing import Dict, List, Any, Optional
 
 logger = logging.getLogger(__name__)
 
-class WebSocketManager:
+class WebsocketManager:
+    """
+    WebSocket manager for handling real-time connections
+    """
     def __init__(self):
-        self.active_connections: Dict[str, Set[WebSocket]] = {}
-
-    @staticmethod
-    async def connect(websocket: WebSocket, task_id: str):
+        self.active_connections: Dict[str, List[WebSocket]] = {}
+        logger.info("Initialized WebSocket manager")
+    
+    async def connect(self, websocket: WebSocket, client_id: str):
         """
-        Connect a WebSocket client and subscribe it to a task
-        """
-        try:
-            await websocket.accept()
-            if task_id not in websocket_manager.active_connections:
-                websocket_manager.active_connections[task_id] = set()
-            websocket_manager.active_connections[task_id].add(websocket)
-            logger.info(f"WebSocket connected for task {task_id}")
-        except Exception as e:
-            logger.error(f"Error connecting WebSocket for task {task_id}: {e}")
-            raise
-
-    @staticmethod
-    async def disconnect(websocket: WebSocket, task_id: str):
-        """
-        Disconnect a WebSocket client and remove it from task subscriptions
-        """
-        try:
-            if task_id in websocket_manager.active_connections:
-                websocket_manager.active_connections[task_id].remove(websocket)
-                if not websocket_manager.active_connections[task_id]:
-                    del websocket_manager.active_connections[task_id]
-                logger.info(f"WebSocket disconnected for task {task_id}")
-        except Exception as e:
-            logger.error(f"Error disconnecting WebSocket for task {task_id}: {e}")
-
-    async def subscribe_to_task(self, websocket: WebSocket, task_id: str):
-        if task_id not in self.active_connections:
-            self.active_connections[task_id] = set()
-        self.active_connections[task_id].add(websocket)
-
-    async def unsubscribe_from_task(self, websocket: WebSocket, task_id: str):
-        await self.disconnect(websocket, task_id)
-
-    async def broadcast_progress(self, task_id: str, progress: float, status: str, error: str = None, details: Optional[Dict[str, Any]] = None):
-        """
-        Broadcast progress update to all connected clients for a specific task
+        Accept and store a websocket connection
         
         Args:
-            task_id: The ID of the task
-            progress: The progress percentage (0-100)
-            status: The status of the task (downloading, processing, complete, error)
-            error: Optional error message
-            details: Optional dictionary with additional details about the download
+            websocket: The WebSocket instance
+            client_id: The client ID to associate with the connection
         """
-        if task_id in self.active_connections:
-            message = {
-                "type": "progress",
-                "task_id": task_id,
-                "progress": progress,
-                "status": status
-            }
-            if error:
-                message["error"] = error
-                
-            # Add additional details if provided
-            if details:
-                message.update(details)
-
-            # Log the message being sent (excluding large data)
-            log_message = message.copy()
-            if 'fileInfo' in log_message and isinstance(log_message['fileInfo'], dict):
-                log_message['fileInfo'] = {k: v for k, v in log_message['fileInfo'].items() if k != 'path'}
-            logger.debug(f"Broadcasting to task {task_id}: {log_message}")
-
-            for connection in self.active_connections[task_id]:
+        await websocket.accept()
+        if client_id not in self.active_connections:
+            self.active_connections[client_id] = []
+        self.active_connections[client_id].append(websocket)
+        logger.info(f"WebSocket connected: {client_id}")
+        return True
+    
+    async def disconnect(self, websocket: WebSocket, client_id: str):
+        """
+        Remove a websocket connection
+        
+        Args:
+            websocket: The WebSocket instance
+            client_id: The client ID associated with the connection
+        """
+        if client_id in self.active_connections:
+            if websocket in self.active_connections[client_id]:
+                self.active_connections[client_id].remove(websocket)
+            if not self.active_connections[client_id]:
+                del self.active_connections[client_id]
+        logger.info(f"WebSocket disconnected: {client_id}")
+        return True
+    
+    async def send_message(self, client_id: str, message: Dict[str, Any]):
+        """
+        Send a message to a specific client
+        
+        Args:
+            client_id: The client ID to send to
+            message: The message to send
+        """
+        if client_id in self.active_connections:
+            for connection in self.active_connections[client_id]:
+                try:
+                    await connection.send_json(message)
+                    logger.debug(f"Sent message to {client_id}: {message}")
+                except Exception as e:
+                    logger.error(f"Error sending message to {client_id}: {e}")
+        else:
+            logger.warning(f"No active connections for client {client_id}")
+        return True
+    
+    async def broadcast(self, message: Dict[str, Any]):
+        """
+        Broadcast a message to all connected clients
+        
+        Args:
+            message: The message to broadcast
+        """
+        for client_id, connections in self.active_connections.items():
+            for connection in connections:
                 try:
                     await connection.send_json(message)
                 except Exception as e:
-                    logger.error(f"Error sending progress update: {e}")
-                    # Remove failed connection
-                    await self.disconnect(connection, task_id)
+                    logger.error(f"Error broadcasting to {client_id}: {e}")
+        return True
+        
+    async def broadcast_progress(self, task_id: str, progress: float, status: str, details: Optional[Any] = None, error: Optional[str] = None):
+        """
+        Broadcast download progress for a specific task
+        
+        Args:
+            task_id: The task ID
+            progress: Progress percentage (0-100)
+            status: Task status (downloading, processing, complete, error)
+            details: Optional details to include in the message (string or dict)
+            error: Optional error message if status is 'error'
+        """
+        message = {
+            "progress": progress,
+            "status": status
+        }
+        
+        if details is not None:
+            message["details"] = details
+            
+        if error:
+            message["error"] = error
+        
+        try:
+            logger.debug(f"Broadcasting progress for task {task_id}: {progress}% ({status})")
+            logger.debug(f"Message content: {message}")
+            return await self.send_message(task_id, message)
+        except Exception as e:
+            logger.error(f"Error broadcasting progress for task {task_id}: {e}")
+            return False
+
 
 # Create a global instance
-websocket_manager = WebSocketManager() 
+websocket_manager = WebsocketManager() 

@@ -20,6 +20,9 @@ import certifi
 import time
 import random
 from src.services.download_strategies import StrategySelector
+from src.services.download_strategies.ytdlp_strategy import YtdlpStrategy
+from src.services.download_strategies.invidious_strategy import InvidiousStrategy
+from src.services.ffmpeg_manager import FFmpegManager
 
 logger = logging.getLogger(__name__)
 
@@ -335,7 +338,7 @@ class DownloadManager:
                 output_path = temp_dir_path / f"{filename}.mp3"
                 
                 # Get appropriate strategy
-                strategy = await self.strategy_selector.get_strategy(query)
+                strategy = await self.strategy_selector.get_best_strategy(query)
                 if not strategy:
                     raise Exception("No suitable download strategy found")
                     
@@ -542,3 +545,57 @@ class DownloadManager:
 
 # Create a global instance
 download_manager = DownloadManager() 
+
+class StrategySelector:
+    """
+    Selects the best download strategy based on the URL and availability
+    """
+    def __init__(self):
+        self.strategies = []
+        self.ffmpeg_manager = FFmpegManager()
+        self._initialize_strategies()
+    
+    def _initialize_strategies(self):
+        """Initialize all available download strategies"""
+        # Add strategies in order of preference
+        self.strategies = [
+            YtdlpStrategy(),
+            InvidiousStrategy()
+        ]
+        logger.info(f"Initialized {len(self.strategies)} download strategies")
+    
+    async def get_best_strategy(self, url: str):
+        """
+        Returns the best strategy for the given URL
+        
+        Args:
+            url: The URL to download from
+            
+        Returns:
+            The best download strategy for the URL
+        """
+        # Try each strategy in order
+        for strategy in self.strategies:
+            try:
+                # Check if this strategy can handle the URL
+                if await strategy.validate_url(url):
+                    logger.info(f"Selected strategy: {strategy.__class__.__name__} for URL: {url}")
+                    return strategy
+            except Exception as e:
+                logger.warning(f"Strategy {strategy.__class__.__name__} validation failed: {str(e)}")
+                continue
+        
+        # If no strategy was found, return the first one as fallback
+        logger.warning(f"No suitable strategy found for URL: {url}, using fallback")
+        return self.strategies[0]
+    
+    async def cleanup(self):
+        """Clean up all strategies"""
+        for strategy in self.strategies:
+            try:
+                await strategy.cleanup()
+            except Exception as e:
+                logger.error(f"Error cleaning up strategy {strategy.__class__.__name__}: {str(e)}")
+        
+        # Cleanup the FFmpeg manager
+        await self.ffmpeg_manager.cleanup() 

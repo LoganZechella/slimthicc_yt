@@ -1,10 +1,13 @@
+import re
 from typing import List, Optional, Dict, Type, Tuple
 import logging
 import asyncio
+import time
 from .base import DownloadStrategy
 from .pytube_strategy import PytubeStrategy
 from .invidious_strategy import InvidiousStrategy
 from .ytdlp_strategy import YtdlpStrategy
+from .spotify_strategy import SpotifyStrategy
 from src.models.download import DownloadError
 
 logger = logging.getLogger(__name__)
@@ -14,16 +17,56 @@ class StrategySelector:
     
     def __init__(self):
         logger.info("Initializing StrategySelector with available strategies")
-        self.strategies: List[DownloadStrategy] = [
-            YtdlpStrategy(),      # Try yt-dlp first (matches desktop app approach)
-            InvidiousStrategy(),  # Then Invidious as backup
-            PytubeStrategy()      # Finally pytube as last resort
-        ]
+        self.strategies: List[DownloadStrategy] = []
+        
+        # Initialize strategies with error handling
+        try:
+            self.strategies.append(SpotifyStrategy())
+            logger.info("Added SpotifyStrategy")
+        except Exception as e:
+            logger.error(f"Failed to initialize SpotifyStrategy: {e}")
+            
+        try:
+            self.strategies.append(YtdlpStrategy())
+            logger.info("Added YtdlpStrategy")
+        except Exception as e:
+            logger.error(f"Failed to initialize YtdlpStrategy: {e}")
+            
+        try:
+            self.strategies.append(InvidiousStrategy())
+            logger.info("Added InvidiousStrategy")
+        except Exception as e:
+            logger.error(f"Failed to initialize InvidiousStrategy: {e}")
+            
+        try:
+            self.strategies.append(PytubeStrategy())
+            logger.info("Added PytubeStrategy")
+        except Exception as e:
+            logger.error(f"Failed to initialize PytubeStrategy: {e}")
+        
         self.strategy_failures: Dict[int, int] = {}
-        self.strategy_health: Dict[int, bool] = {i: True for i in range(3)}  # Initialize health status
+        self.strategy_health: Dict[int, bool] = {i: True for i in range(len(self.strategies))}  # Initialize health status
         self.max_failures = 3  # Max failures before marking strategy as unhealthy
         self.failure_reset_time = 300  # Seconds before resetting failure count
         self.last_failure_time = {i: 0 for i in range(len(self.strategies))}
+        
+        # Store recent error messages to detect patterns
+        self.recent_errors: Dict[int, List[str]] = {i: [] for i in range(len(self.strategies))}
+        
+        # Critical error patterns that should trigger strategy failover
+        self.critical_error_patterns = [
+            r"signature extraction failed",
+            r"Unable to extract signature",
+            r"Unsupported URL",
+            r"Precondition check failed",
+            r"Not a YouTube URL",
+            r"This video is unavailable",
+            r"YouTube said: This video is unavailable",
+            r"Unable to extract initial player response",
+            r"Spotify API credentials are not set",
+            r"Failed to initialize Spotify client"
+        ]
+        
         logger.info(f"Initialized {len(self.strategies)} strategies")
         
     async def _check_strategy_health(self, index: int) -> bool:
@@ -35,15 +78,30 @@ class StrategySelector:
                 logger.info(f"Resetting health for strategy {index}")
                 self.strategy_health[index] = True
                 self.strategy_failures[index] = 0
+                self.recent_errors[index] = []
                 return True
             return False
         return True
         
-    async def _mark_strategy_failure(self, index: int):
+    async def _mark_strategy_failure(self, index: int, error_message: str = None):
         """Mark a strategy failure and update health status."""
         now = asyncio.get_event_loop().time()
         self.strategy_failures[index] += 1
         self.last_failure_time[index] = now
+        
+        # Store recent error for pattern analysis
+        if error_message:
+            self.recent_errors[index].append(error_message)
+            # Keep only last 5 errors
+            if len(self.recent_errors[index]) > 5:
+                self.recent_errors[index].pop(0)
+                
+            # Check for critical error patterns that should trigger immediate failover
+            for pattern in self.critical_error_patterns:
+                if re.search(pattern, error_message, re.IGNORECASE):
+                    logger.warning(f"Critical error detected in strategy {index}: {pattern} in '{error_message}'")
+                    self.strategy_health[index] = False
+                    return
         
         if self.strategy_failures[index] >= self.max_failures:
             logger.warning(f"Strategy {index} marked as unhealthy after {self.max_failures} failures")
@@ -51,13 +109,40 @@ class StrategySelector:
         
     async def get_strategy(self, url: str) -> Optional[Tuple[DownloadStrategy, int]]:
         """Get the first working strategy for a URL."""
-        for index, strategy in enumerate(self.strategies):
+        logger.info(f"Finding strategy for URL: {url}")
+        
+        # First check if this is a Spotify URL - these should be handled by the Spotify strategy
+        if 'spotify.com' in url or 'spotify:' in url:
+            logger.info("URL appears to be Spotify, checking Spotify strategy first")
+            spotify_strategy = self.strategies[0]
+            
             try:
+                # Validate with Spotify strategy
+                if await spotify_strategy.validate_url(url):
+                    logger.info("Spotify strategy validated URL, using Spotify strategy")
+                    return spotify_strategy, 0
+                else:
+                    logger.warning("URL looks like Spotify but Spotify strategy could not validate it")
+            except Exception as e:
+                logger.error(f"Error validating Spotify URL: {e}")
+        
+        # Fallback to checking all strategies
+        for index, strategy in enumerate(self.strategies):
+            # Skip unhealthy strategies
+            if not await self._check_strategy_health(index):
+                logger.info(f"Skipping unhealthy strategy {index} ({strategy.__class__.__name__})")
+                continue
+                
+            try:
+                logger.debug(f"Trying strategy {index} ({strategy.__class__.__name__})")
                 if await strategy.validate_url(url):
+                    logger.info(f"URL validated by strategy {index} ({strategy.__class__.__name__})")
                     return strategy, index
             except Exception as e:
-                logger.error(f"Error validating URL with strategy {strategy.__class__.__name__}: {e}")
-                continue
+                logger.error(f"Error validating URL with strategy {index} ({strategy.__class__.__name__}): {e}")
+                await self._mark_strategy_failure(index, str(e))
+            
+        logger.warning(f"No suitable strategy found for URL: {url}")
         return None
         
     async def get_info(self, url: str) -> Dict[str, any]:
@@ -81,21 +166,31 @@ class StrategySelector:
             
         strategy, index = result
         try:
-            info = await strategy.get_info(url)
+            # Add timeout mechanism for info retrieval
+            start_time = time.time()
+            info = await asyncio.wait_for(strategy.get_info(url), timeout=15.0)
+            elapsed = time.time() - start_time
+            
             if not info:
-                await self._mark_strategy_failure(index)
+                await self._mark_strategy_failure(index, "Empty info returned")
                 # Try next strategy
-                return await self.get_info_with_next_strategy(url)
-            logger.info(f"Successfully got info using {strategy.__class__.__name__}")
+                return await self.get_info_with_next_strategy(url, "Empty info returned")
+                
+            logger.info(f"Successfully got info using {strategy.__class__.__name__} in {elapsed:.2f} seconds")
             return info
+        except asyncio.TimeoutError:
+            logger.error(f"Timeout getting info with strategy {strategy.__class__.__name__}")
+            await self._mark_strategy_failure(index, "Timeout error")
+            return await self.get_info_with_next_strategy(url, "Timeout error")
         except Exception as e:
             logger.error(f"Error getting info with strategy {strategy.__class__.__name__}: {e}")
-            await self._mark_strategy_failure(index)
+            await self._mark_strategy_failure(index, str(e))
             # Try next strategy
-            return await self.get_info_with_next_strategy(url)
+            return await self.get_info_with_next_strategy(url, str(e))
             
-    async def get_info_with_next_strategy(self, url: str) -> Dict[str, any]:
+    async def get_info_with_next_strategy(self, url: str, error_reason: str = "") -> Dict[str, any]:
         """Try getting info with next available strategy."""
+        logger.info(f"Trying next strategy due to: {error_reason}")
         next_strategy = await self.try_next_strategy(url)
         if next_strategy:
             strategy, _ = next_strategy
@@ -121,6 +216,7 @@ class StrategySelector:
         self.strategy_health[index] = True
         self.strategy_failures[index] = 0
         self.last_failure_time[index] = 0
+        self.recent_errors[index] = []
         
     async def try_next_strategy(self, url: str) -> Optional[Tuple[DownloadStrategy, int]]:
         """Try the next available strategy."""
@@ -132,12 +228,19 @@ class StrategySelector:
         
         # Try remaining strategies
         for index in range(current_index + 1, len(self.strategies)):
+            # Skip unhealthy strategies
+            if not await self._check_strategy_health(index):
+                logger.info(f"Skipping unhealthy next strategy {index}")
+                continue
+                
             strategy = self.strategies[index]
             try:
                 if await strategy.validate_url(url):
+                    logger.info(f"Switching to strategy {index}: {strategy.__class__.__name__}")
                     return strategy, index
             except Exception as e:
                 logger.error(f"Error validating URL with strategy {strategy.__class__.__name__}: {e}")
+                await self._mark_strategy_failure(index, str(e))
                 continue
                 
         return None 

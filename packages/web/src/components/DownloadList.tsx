@@ -4,6 +4,7 @@ import { useSelector, useDispatch } from 'react-redux'
 import { RootState } from '../store'
 import { taskUpdated, DownloadTask } from '../store/downloads'
 import { websocketService } from '../services/websocket'
+import { logger } from '../utils/logger'
 
 const DownloadListContainer = styled.div`
   margin-top: 2rem;
@@ -222,40 +223,82 @@ export const DownloadList: React.FC = () => {
 
   const handleDownload = async (taskId: string) => {
     try {
-      const response = await fetch(`/api/v1/downloads/${taskId}/file`)
+      logger.info(`Initiating download for task ${taskId}`);
+      
+      // Show a loading state to the user
+      dispatch(taskUpdated({
+        ...tasks[taskId],
+        id: taskId,
+        status: 'complete',
+        progress: 100,
+        error: undefined,
+        updatedAt: new Date().toISOString()
+      }));
+      
+      // Include a timestamp to avoid browser caching
+      const timestamp = new Date().getTime();
+      const url = `/api/v1/downloads/${taskId}/file?t=${timestamp}`;
+      logger.info(`Fetching file from ${url}`);
+      
+      const response = await fetch(url);
+      
       if (!response.ok) {
-        const errorText = await response.text()
-        throw new Error(`Download failed: ${errorText}`)
+        const errorText = await response.text();
+        logger.error(`Download failed with status ${response.status}: ${errorText}`);
+        throw new Error(`Download failed: ${response.status} ${errorText}`);
       }
       
+      // Get content type and size for logging
+      const contentType = response.headers.get('Content-Type') || 'application/octet-stream';
+      const contentLength = response.headers.get('Content-Length');
+      logger.info(`Received response: type=${contentType}, size=${contentLength || 'unknown'} bytes`);
+      
       // Get the filename from the Content-Disposition header if available
-      const contentDisposition = response.headers.get('Content-Disposition')
-      let filename = 'download'
+      const contentDisposition = response.headers.get('Content-Disposition');
+      let filename = 'download';
       if (contentDisposition) {
-        const matches = /filename[^;=\n]*=((['"]).*?\2|[^;\n]*)/.exec(contentDisposition)
+        const matches = /filename[^;=\n]*=((['"]).*?\2|[^;\n]*)/.exec(contentDisposition);
         if (matches != null && matches[1]) {
-          filename = matches[1].replace(/['"]/g, '')
+          filename = matches[1].replace(/['"]/g, '');
         }
       }
       
+      logger.info(`Downloading file: ${filename}, type: ${contentType}`);
+      
       // Create a blob from the response and trigger download
-      const blob = await response.blob()
-      const url = window.URL.createObjectURL(blob)
-      const a = document.createElement('a')
-      a.href = url
-      a.download = filename
-      document.body.appendChild(a)
-      a.click()
-      window.URL.revokeObjectURL(url)
-      document.body.removeChild(a)
+      const blob = await response.blob();
+      const downloadUrl = window.URL.createObjectURL(blob);
+      
+      // Use the download attribute of an anchor element
+      const a = document.createElement('a');
+      a.href = downloadUrl;
+      a.download = filename;
+      a.style.display = 'none';
+      document.body.appendChild(a);
+      
+      // Trigger the download
+      logger.info(`Triggering download with filename: ${filename}`);
+      a.click();
+      
+      // Clean up
+      setTimeout(() => {
+        window.URL.revokeObjectURL(downloadUrl);
+        document.body.removeChild(a);
+        logger.info(`Download cleanup complete for ${filename}`);
+      }, 100);
+      
+      logger.info(`Download process completed for task ${taskId}`);
     } catch (error) {
-      console.error('Error downloading file:', error)
+      logger.error(`Error downloading file: ${error instanceof Error ? error.message : String(error)}`);
+      
       // Show error message to the user
       dispatch(taskUpdated({
+        ...tasks[taskId],
         id: taskId,
         error: error instanceof Error ? error.message : 'Failed to download file',
-        status: 'error'
-      }))
+        status: 'error',
+        updatedAt: new Date().toISOString()
+      }));
     }
   }
 
