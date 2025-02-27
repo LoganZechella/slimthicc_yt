@@ -13,10 +13,15 @@ const API_BASE_URL = shouldUseRelativeUrls
   ? '' // Empty string for relative URLs in production
   : (import.meta.env.VITE_API_URL || 'https://slimthicc-yt-api-latest.onrender.com');
 
+// Ensure API_BASE_URL always uses HTTPS if it's an absolute URL
+const secureApiBaseUrl = API_BASE_URL 
+  ? API_BASE_URL.replace(/^http:\/\//i, 'https://') 
+  : API_BASE_URL;
+
 const API_V1_PATH = '/api/v1';
 
 // Full API URL with version
-export const API_URL = `${API_BASE_URL}${API_V1_PATH}`;
+export const API_URL = `${secureApiBaseUrl}${API_V1_PATH}`;
 
 // API endpoints with constructed URLs
 export const ENDPOINTS = {
@@ -26,7 +31,10 @@ export const ENDPOINTS = {
 };
 
 // WebSocket URL - always use absolute URL for WebSockets
-export const WS_BASE_URL = import.meta.env.VITE_WS_URL || 'wss://slimthicc-yt-api-latest.onrender.com';
+// Ensure WebSocket URL always uses WSS (secure WebSockets)
+export const WS_BASE_URL = (import.meta.env.VITE_WS_URL || 'wss://slimthicc-yt-api-latest.onrender.com')
+  .replace(/^ws:\/\//i, 'wss://');
+
 export const WS_URL = `${WS_BASE_URL}${API_V1_PATH}`;
 
 /**
@@ -34,10 +42,13 @@ export const WS_URL = `${WS_BASE_URL}${API_V1_PATH}`;
  */
 export async function makeRequest(url: string, options: RequestInit = {}) {
   try {
-    // Log the request for debugging
-    console.log(`Making API request to: ${url}`);
+    // Ensure URL is using HTTPS
+    const secureUrl = url.replace(/^http:\/\//i, 'https://');
     
-    const response = await fetch(url, {
+    // Log the request for debugging
+    console.log(`Making API request to: ${secureUrl}`);
+    
+    const response = await fetch(secureUrl, {
       ...options,
       headers: {
         'Content-Type': 'application/json',

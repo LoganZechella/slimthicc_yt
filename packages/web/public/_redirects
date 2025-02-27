@@ -1,5 +1,8 @@
-# Redirect API calls to the backend
+# Redirect API calls to the backend (using HTTPS)
 /api/*  https://slimthicc-yt-api-latest.onrender.com/api/:splat  200
+
+# Handle WebSocket connections (using WSS)
+/ws/*  wss://slimthicc-yt-api-latest.onrender.com/ws/:splat  101
 
 # SPA fallback
 /*  /index.html  200 

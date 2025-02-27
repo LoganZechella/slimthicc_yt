@@ -41,9 +41,10 @@ export class WebSocketService {
         // Determine the WebSocket protocol based on whether we're using a relative or absolute URL
         const isRelativeUrl = wsUrl.startsWith('/');
         
-        // For relative URLs, use the current protocol (ws or wss depending on http/https)
+        // For relative URLs, always use secure WebSocket (wss)
+        // For HTTPS pages, browsers will only allow WSS connections
         const protocol = isRelativeUrl
-          ? (window.location.protocol === 'https:' ? 'wss:' : 'ws:') 
+          ? 'wss:' // Always use secure WebSockets for relative paths
           : '';
         
         // Construct the full URL for relative paths
@@ -51,9 +52,12 @@ export class WebSocketService {
           ? `${protocol}//${window.location.host}${wsUrl}`
           : wsUrl;
         
-        console.log(`Connecting to WebSocket with full URL: ${fullWsUrl}`);
+        // Ensure the WebSocket URL uses WSS (secure)
+        const secureWsUrl = fullWsUrl.replace(/^ws:\/\//i, 'wss://');
         
-        const ws = new WebSocket(fullWsUrl)
+        console.log(`Connecting to WebSocket with secure URL: ${secureWsUrl}`);
+        
+        const ws = new WebSocket(secureWsUrl)
         
         ws.onopen = () => {
           console.log(`WebSocket connection opened for task ${taskId}`)
