@@ -1,7 +1,10 @@
+# Note: These redirects are supplementary to the ones in netlify.toml
+# netlify.toml configurations take precedence over this file
+
 # Redirect API calls to the backend (using HTTPS)
 /api/*  https://slimthicc-yt-api-latest.onrender.com/api/:splat  200
 
-# SPA fallback
+# Fallback SPA route
 /*  /index.html  200
 
 # Note: WebSocket redirects are handled in netlify.toml, not in this file 

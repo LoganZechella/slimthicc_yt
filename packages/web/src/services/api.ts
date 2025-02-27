@@ -48,30 +48,35 @@ export async function makeRequest(url: string, options: RequestInit = {}) {
     // Log the request for debugging
     console.log(`Making API request to: ${secureUrl}`);
     
-    // For non-GET requests, we need to handle preflight requests correctly
-    const isProduction = import.meta.env.PROD;
-    const isWrite = options.method && ['POST', 'PUT', 'DELETE', 'PATCH'].includes(options.method);
-    
-    // If we're in production and this is a write operation, use our proxy path for better CORS handling
-    // But don't modify URLs that are already relative
-    const finalUrl = isProduction && isWrite && !secureUrl.startsWith('/') 
+    // For production, always use relative URLs for API requests
+    // This ensures requests go through Netlify's proxy
+    const finalUrl = isProduction 
       ? secureUrl.replace('https://slimthicc-yt-api-latest.onrender.com', '')
       : secureUrl;
     
-    console.log(`Using final URL: ${finalUrl}`);
+    // Make sure URL starts with / for relative paths
+    const normalizedUrl = finalUrl.startsWith('/') || finalUrl.startsWith('http') 
+      ? finalUrl 
+      : `/${finalUrl}`;
     
-    const response = await fetch(finalUrl, {
+    console.log(`Using final URL: ${normalizedUrl}`);
+    
+    // Set up request options with MODE=cors explicitly to help with CORS
+    const fetchOptions: RequestInit = {
       ...options,
-      // Don't include credentials for cross-origin requests to avoid CORS preflight issues
-      credentials: isProduction ? 'same-origin' : 'omit',
+      mode: 'cors',
+      credentials: 'same-origin',  // Don't send cookies for cross-origin requests
       headers: {
         'Content-Type': 'application/json',
-        // Add additional headers to help with CORS
         'Accept': 'application/json',
-        ...(isProduction && { 'X-Requested-With': 'XMLHttpRequest' }),
+        'X-Requested-With': 'XMLHttpRequest',  // Help identify AJAX requests
         ...options.headers,
-      },
-    });
+      }
+    };
+    
+    console.log('Fetch options:', JSON.stringify(fetchOptions, null, 2));
+    
+    const response = await fetch(normalizedUrl, fetchOptions);
 
     // Try to parse JSON response
     const data = await response.json().catch(() => ({}));
