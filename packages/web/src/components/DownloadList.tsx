@@ -5,6 +5,7 @@ import { RootState } from '../store'
 import { taskUpdated, DownloadTask } from '../store/downloads'
 import { websocketService } from '../services/websocket'
 import { logger } from '../utils/logger'
+import { ENDPOINTS } from '../services/api'
 
 const DownloadListContainer = styled.div`
   margin-top: 2rem;
@@ -237,7 +238,7 @@ export const DownloadList: React.FC = () => {
       
       // Include a timestamp to avoid browser caching
       const timestamp = new Date().getTime();
-      const url = `/api/v1/downloads/${taskId}/file?t=${timestamp}`;
+      const url = `${ENDPOINTS.DOWNLOAD_FILE(taskId)}?t=${timestamp}`;
       logger.info(`Fetching file from ${url}`);
       
       const response = await fetch(url);

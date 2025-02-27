@@ -1,15 +1,15 @@
+import { WS_URL } from './api';
+
 export class WebSocketService {
   private connections: Map<string, WebSocket> = new Map()
   private callbacks: Map<string, Function> = new Map()
   private baseUrl: string
 
   constructor() {
-    // Determine WebSocket URL - same host as current page but with WebSocket protocol
-    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
-    const host = window.location.host
-    this.baseUrl = `${protocol}//${host}/api/v1/downloads`
+    // Use the exported WS_URL from the API service
+    this.baseUrl = `${WS_URL}/downloads`;
     
-    console.log('WebSocket service initialized with base URL:', this.baseUrl)
+    console.log('WebSocket service initialized with base URL:', this.baseUrl);
   }
 
   subscribeToTask(taskId: string, callback: Function): Promise<void> {

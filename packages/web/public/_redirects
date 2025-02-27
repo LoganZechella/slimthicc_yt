@@ -1,0 +1,5 @@
+# Redirect API calls to the backend
+/api/*  https://slimthicc-yt-api-latest.onrender.com/api/:splat  200
+
+# SPA fallback
+/*  /index.html  200 

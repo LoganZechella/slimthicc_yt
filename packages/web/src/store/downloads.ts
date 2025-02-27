@@ -1,5 +1,6 @@
 import { createSlice, createAsyncThunk, PayloadAction } from '@reduxjs/toolkit'
 import { websocketService } from '../services/websocket'
+import { ENDPOINTS, makeRequest, logApiCall } from '../services/api'
 
 export type AudioQuality = 'HIGH' | 'MEDIUM' | 'LOW'
 export type DownloadFormat = 'mp3' | 'm4a'
@@ -50,31 +51,6 @@ function ensureValidUrl(url: string): string {
   throw new Error('Invalid URL. Please enter a valid Spotify or YouTube URL.')
 }
 
-async function makeRequest(url: string, options: RequestInit = {}) {
-  try {
-    const response = await fetch(url, {
-      ...options,
-      headers: {
-        'Content-Type': 'application/json',
-        ...options.headers,
-      },
-    })
-
-    const data = await response.json().catch(() => ({}))
-    
-    if (!response.ok) {
-      throw new Error(data.detail || `Request failed with status ${response.status}`)
-    }
-
-    return data
-  } catch (error) {
-    if (error instanceof Error) {
-      throw error
-    }
-    throw new Error('An unexpected error occurred')
-  }
-}
-
 export const startDownload = createAsyncThunk(
   'downloads/startDownload',
   async (request: { url: string; format?: DownloadFormat; quality?: AudioQuality }, { dispatch }) => {
@@ -83,11 +59,11 @@ export const startDownload = createAsyncThunk(
       const validUrl = ensureValidUrl(request.url)
       console.log('Validated URL:', validUrl);
       
-      console.log('Making API request to /api/v1/downloads/');
+      logApiCall(ENDPOINTS.DOWNLOADS, 'POST', { url: validUrl, format: request.format, quality: request.quality });
       
       let response;
       try {
-        response = await fetch('/api/v1/downloads/', {
+        response = await fetch(ENDPOINTS.DOWNLOADS, {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
@@ -203,7 +179,8 @@ export const startDownload = createAsyncThunk(
 export const getTaskStatus = createAsyncThunk(
   'downloads/getTaskStatus',
   async (taskId: string) => {
-    return await makeRequest(`/api/v1/downloads/${taskId}`) as DownloadTask
+    logApiCall(ENDPOINTS.DOWNLOAD(taskId), 'GET');
+    return await makeRequest(ENDPOINTS.DOWNLOAD(taskId)) as DownloadTask
   }
 )
 
