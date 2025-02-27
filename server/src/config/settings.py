@@ -75,11 +75,11 @@ class Settings(BaseSettings):
     MONGODB_DB_NAME: str = os.getenv("MONGODB_DB_NAME", "slimthicc_command_center")
     
     # CORS Settings
-    CORS_ORIGINS: List[str] = [
-        "http://localhost:5173",  # Vite dev server
-        "http://localhost:8000",  # FastAPI server
-        "http://localhost:3000",  # Alternative frontend port
-    ]
+    # Read from environment or use defaults
+    # Parse comma-separated list from environment variable if present
+    CORS_ORIGINS: List[str] = []  # Initialize empty, will be populated in __init__
+    # Add wildcard for any origin in production
+    CORS_ALLOW_ALL: bool = os.getenv("CORS_ALLOW_ALL", "false").lower() == "true"
     CORS_ORIGINS_REGEX: str = r"https?://localhost:\d+"  # Allow any localhost port
     
     # WebSocket Settings
@@ -122,6 +122,40 @@ class Settings(BaseSettings):
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
+        
+        # Handle CORS origins parsing more robustly
+        cors_env = os.getenv("CORS_ORIGINS")
+        if cors_env:
+            try:
+                # Try to parse as JSON first
+                import json
+                self.CORS_ORIGINS = json.loads(cors_env)
+                logger.info("Parsed CORS_ORIGINS as JSON")
+            except json.JSONDecodeError:
+                # If not valid JSON, try comma-separated format
+                self.CORS_ORIGINS = [origin.strip() for origin in cors_env.split(",") if origin.strip()]
+                logger.info("Parsed CORS_ORIGINS as comma-separated string")
+        else:
+            # Default origins
+            self.CORS_ORIGINS = [
+                "http://localhost:5173",  # Vite dev server
+                "http://localhost:8000",  # FastAPI server
+                "http://localhost:3000",  # Alternative frontend port
+                "https://slimthicc-commandcenter.netlify.app",  # Production Netlify domain
+            ]
+            logger.info("Using default CORS_ORIGINS")
+        
+        # Clean up CORS origins (remove empty strings)
+        self.CORS_ORIGINS = [origin for origin in self.CORS_ORIGINS if origin and isinstance(origin, str)]
+        
+        # Log CORS settings
+        if self.CORS_ALLOW_ALL:
+            logger.warning("CORS is configured to allow all origins (*)! This is not recommended for production.")
+            # Add wildcard to origins if allowing all
+            if "*" not in self.CORS_ORIGINS:
+                self.CORS_ORIGINS.append("*")
+        
+        logger.info(f"CORS origins: {self.CORS_ORIGINS}")
         
         # Log Spotify credentials status
         if self.SPOTIFY_CLIENT_ID and self.SPOTIFY_CLIENT_SECRET:

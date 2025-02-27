@@ -1,4 +1,4 @@
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
 import os
@@ -26,15 +26,38 @@ app = FastAPI(
     openapi_url=f"{settings.API_V1_STR}/openapi.json"
 )
 
-# Set up CORS middleware
+# Log CORS settings
+logger.info(f"Configuring CORS with origins: {settings.CORS_ORIGINS}")
+if "*" in settings.CORS_ORIGINS:
+    logger.warning("Allowing all origins with CORS wildcard '*'")
+
+# Set up CORS middleware with improved handling of preflight requests
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.CORS_ORIGINS,
     allow_credentials=True,
-    allow_methods=["*"],
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"],
     allow_headers=["*"],
-    allow_origin_regex=r"https?://localhost:\d+"  # Allow any localhost port
+    max_age=86400,  # Cache preflight request results for 24 hours (in seconds)
 )
+
+# Custom middleware for debugging CORS requests
+@app.middleware("http")
+async def cors_debug_middleware(request: Request, call_next):
+    # Log all OPTIONS requests for debugging
+    if request.method == "OPTIONS":
+        logger.info(f"Received OPTIONS preflight request from {request.client.host} to {request.url.path}")
+        logger.debug(f"Request headers: {dict(request.headers)}")
+
+    # Process the request and get the response
+    response = await call_next(request)
+
+    # Add CORS headers to every response
+    if request.method == "OPTIONS":
+        # Log the response headers for debugging
+        logger.info(f"Responding to OPTIONS request with headers: {dict(response.headers)}")
+    
+    return response
 
 # Include API router
 app.include_router(api_router, prefix=settings.API_V1_STR)
@@ -71,4 +94,9 @@ async def root():
         "name": settings.PROJECT_NAME,
         "version": settings.VERSION,
         "status": "running"
-    } 
+    }
+
+# Add a health check endpoint
+@app.get("/health")
+async def health():
+    return {"status": "ok"} 
