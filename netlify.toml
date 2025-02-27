@@ -9,11 +9,31 @@
   to = "https://slimthicc-yt-api-latest.onrender.com/api/:splat"
   status = 200
   force = true
+  # Allow Netlify to override response headers from origin
+  responseOverrideAllowed = true
   # Add CORS headers to fix CORS issues
   [redirects.headers]
     Access-Control-Allow-Origin = "*"
     Access-Control-Allow-Methods = "GET, POST, PUT, DELETE, OPTIONS"
     Access-Control-Allow-Headers = "Origin, X-Requested-With, Content-Type, Accept, Authorization"
+    Access-Control-Max-Age = "86400"
+
+# Handle OPTIONS preflight requests for API
+[[redirects]]
+  from = "/api/*"
+  to = "https://slimthicc-yt-api-latest.onrender.com/api/:splat"
+  status = 200
+  force = true
+  # Only apply this rule for OPTIONS requests
+  conditions = {method = "OPTIONS"}
+  # Add CORS headers
+  [redirects.headers]
+    Access-Control-Allow-Origin = "*"
+    Access-Control-Allow-Methods = "GET, POST, PUT, DELETE, OPTIONS"
+    Access-Control-Allow-Headers = "Origin, X-Requested-With, Content-Type, Accept, Authorization"
+    Access-Control-Max-Age = "86400"
+    Content-Type = "text/plain"
+    Content-Length = "0"
 
 # Handle WebSocket connections (force WSS)
 [[redirects]]

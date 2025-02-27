@@ -59,23 +59,43 @@ export const startDownload = createAsyncThunk(
       const validUrl = ensureValidUrl(request.url)
       console.log('Validated URL:', validUrl);
       
-      logApiCall(ENDPOINTS.DOWNLOADS, 'POST', { url: validUrl, format: request.format, quality: request.quality });
+      // Construct the data payload
+      const payload = {
+        url: validUrl,
+        format: request.format || 'mp3',
+        quality: request.quality || 'HIGH'
+      };
+      
+      // Log the API call
+      logApiCall(ENDPOINTS.DOWNLOADS, 'POST', payload);
       
       let data;
       try {
-        // Use makeRequest function from API service instead of direct fetch
+        // Use makeRequest function from API service 
         data = await makeRequest(ENDPOINTS.DOWNLOADS, {
           method: 'POST',
-          body: JSON.stringify({
-            url: validUrl,
-            format: request.format || 'mp3',
-            quality: request.quality || 'HIGH'
-          })
+          body: JSON.stringify(payload)
         });
         console.log('API response data:', data);
       } catch (error) {
         console.error('API request failed:', error);
-        throw error;
+        // If we're in a production environment, try the relative URL path directly as fallback
+        if (import.meta.env.PROD) {
+          console.log('Attempting fallback to relative URL');
+          try {
+            // Try with relative URL as fallback
+            data = await makeRequest('/api/v1/downloads', {
+              method: 'POST',
+              body: JSON.stringify(payload)
+            });
+            console.log('Fallback successful, API response data:', data);
+          } catch (fallbackError) {
+            console.error('Fallback API request also failed:', fallbackError);
+            throw fallbackError;
+          }
+        } else {
+          throw error;
+        }
       }
       
       // Validate required fields

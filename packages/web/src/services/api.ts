@@ -48,10 +48,27 @@ export async function makeRequest(url: string, options: RequestInit = {}) {
     // Log the request for debugging
     console.log(`Making API request to: ${secureUrl}`);
     
-    const response = await fetch(secureUrl, {
+    // For non-GET requests, we need to handle preflight requests correctly
+    const isProduction = import.meta.env.PROD;
+    const isWrite = options.method && ['POST', 'PUT', 'DELETE', 'PATCH'].includes(options.method);
+    
+    // If we're in production and this is a write operation, use our proxy path for better CORS handling
+    // But don't modify URLs that are already relative
+    const finalUrl = isProduction && isWrite && !secureUrl.startsWith('/') 
+      ? secureUrl.replace('https://slimthicc-yt-api-latest.onrender.com', '')
+      : secureUrl;
+    
+    console.log(`Using final URL: ${finalUrl}`);
+    
+    const response = await fetch(finalUrl, {
       ...options,
+      // Don't include credentials for cross-origin requests to avoid CORS preflight issues
+      credentials: isProduction ? 'same-origin' : 'omit',
       headers: {
         'Content-Type': 'application/json',
+        // Add additional headers to help with CORS
+        'Accept': 'application/json',
+        ...(isProduction && { 'X-Requested-With': 'XMLHttpRequest' }),
         ...options.headers,
       },
     });
