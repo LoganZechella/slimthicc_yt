@@ -1,8 +1,7 @@
 # Redirect API calls to the backend (using HTTPS)
 /api/*  https://slimthicc-yt-api-latest.onrender.com/api/:splat  200
 
-# Handle WebSocket connections (using WSS)
-/ws/*  wss://slimthicc-yt-api-latest.onrender.com/ws/:splat  101
-
 # SPA fallback
-/*  /index.html  200 
+/*  /index.html  200
+
+# Note: WebSocket redirects are handled in netlify.toml, not in this file 
