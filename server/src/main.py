@@ -28,13 +28,22 @@ app = FastAPI(
 
 # Log CORS settings
 logger.info(f"Configuring CORS with origins: {settings.CORS_ORIGINS}")
-if "*" in settings.CORS_ORIGINS:
+
+# Add fallback for CORS settings if empty or missing
+if not settings.CORS_ORIGINS or len(settings.CORS_ORIGINS) == 0:
+    logger.warning("No CORS origins found in settings, using fallback with wildcard")
+    cors_origins = ["*"]
+    settings.CORS_ALLOW_ALL = True
+else:
+    cors_origins = settings.CORS_ORIGINS
+
+if "*" in cors_origins:
     logger.warning("Allowing all origins with CORS wildcard '*'")
 
 # Set up CORS middleware with improved handling of preflight requests
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=settings.CORS_ORIGINS,
+    allow_origins=cors_origins,
     allow_credentials=True,
     allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"],
     allow_headers=["*"],

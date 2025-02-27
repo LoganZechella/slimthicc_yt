@@ -75,12 +75,12 @@ class Settings(BaseSettings):
     MONGODB_DB_NAME: str = os.getenv("MONGODB_DB_NAME", "slimthicc_command_center")
     
     # CORS Settings
-    # Read from environment or use defaults
-    # Parse comma-separated list from environment variable if present
-    CORS_ORIGINS: List[str] = []  # Initialize empty, will be populated in __init__
-    # Add wildcard for any origin in production
-    CORS_ALLOW_ALL: bool = os.getenv("CORS_ALLOW_ALL", "false").lower() == "true"
+    # We'll handle CORS_ORIGINS separately in __init__ to avoid Pydantic parsing issues
+    # CORS_ORIGINS removed from the model definition
     CORS_ORIGINS_REGEX: str = r"https?://localhost:\d+"  # Allow any localhost port
+    
+    # Allow all origins flag - convert to bool in __init__
+    CORS_ALLOW_ALL_STR: str = "false"
     
     # WebSocket Settings
     WS_URL: str = "ws://localhost:8000/ws"
@@ -123,18 +123,14 @@ class Settings(BaseSettings):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         
-        # Handle CORS origins parsing more robustly
-        cors_env = os.getenv("CORS_ORIGINS")
-        if cors_env:
-            try:
-                # Try to parse as JSON first
-                import json
-                self.CORS_ORIGINS = json.loads(cors_env)
-                logger.info("Parsed CORS_ORIGINS as JSON")
-            except json.JSONDecodeError:
-                # If not valid JSON, try comma-separated format
-                self.CORS_ORIGINS = [origin.strip() for origin in cors_env.split(",") if origin.strip()]
-                logger.info("Parsed CORS_ORIGINS as comma-separated string")
+        # Manual handling of CORS_ORIGINS to avoid Pydantic parsing issues
+        self.CORS_ORIGINS = []
+        cors_env = os.getenv("CORS_ORIGINS", "")
+        logger.info(f"Raw CORS_ORIGINS from env: '{cors_env}'")
+        
+        if cors_env and len(cors_env.strip()) > 0:
+            self.CORS_ORIGINS = [origin.strip() for origin in cors_env.split(",") if origin.strip()]
+            logger.info(f"Parsed CORS_ORIGINS: {self.CORS_ORIGINS}")
         else:
             # Default origins
             self.CORS_ORIGINS = [
@@ -143,19 +139,24 @@ class Settings(BaseSettings):
                 "http://localhost:3000",  # Alternative frontend port
                 "https://slimthicc-commandcenter.netlify.app",  # Production Netlify domain
             ]
-            logger.info("Using default CORS_ORIGINS")
+            logger.info(f"Using default CORS_ORIGINS: {self.CORS_ORIGINS}")
+        
+        # Manual handling of CORS_ALLOW_ALL
+        self.CORS_ALLOW_ALL = False
+        cors_allow_all_env = os.getenv("CORS_ALLOW_ALL", "false").lower()
+        logger.info(f"Raw CORS_ALLOW_ALL from env: '{cors_allow_all_env}'")
+        
+        if cors_allow_all_env in ("true", "1", "yes", "y"):
+            self.CORS_ALLOW_ALL = True
+            logger.warning("CORS is configured to allow all origins (*). This is not recommended for production.")
+            # Add wildcard to origins
+            if "*" not in self.CORS_ORIGINS:
+                self.CORS_ORIGINS.append("*")
         
         # Clean up CORS origins (remove empty strings)
         self.CORS_ORIGINS = [origin for origin in self.CORS_ORIGINS if origin and isinstance(origin, str)]
         
-        # Log CORS settings
-        if self.CORS_ALLOW_ALL:
-            logger.warning("CORS is configured to allow all origins (*)! This is not recommended for production.")
-            # Add wildcard to origins if allowing all
-            if "*" not in self.CORS_ORIGINS:
-                self.CORS_ORIGINS.append("*")
-        
-        logger.info(f"CORS origins: {self.CORS_ORIGINS}")
+        logger.info(f"Final CORS origins: {self.CORS_ORIGINS}")
         
         # Log Spotify credentials status
         if self.SPOTIFY_CLIENT_ID and self.SPOTIFY_CLIENT_SECRET:
