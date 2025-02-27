@@ -13,18 +13,14 @@ DOCKER_USERNAME="loganzechella"
 
 # Image name and tag
 IMAGE_NAME="slimthicc_yt"
-TAG_NAME="latest"
+TAG_NAME="api-latest"
 
 echo -e "${BLUE}=== Building Docker image with CORS fixes ===${NC}"
 echo -e "${YELLOW}This will build and push a new version of your backend with CORS support${NC}"
 
-# Build the Docker image
-echo -e "${BLUE}Building Docker image...${NC}"
-docker build -t $DOCKER_USERNAME/$IMAGE_NAME:$TAG_NAME .
-
-# Push the image to Docker Hub
-echo -e "${BLUE}Pushing to Docker Hub...${NC}"
-docker push $DOCKER_USERNAME/$IMAGE_NAME:$TAG_NAME
+# Build the Docker image with explicit platform for linux/amd64
+echo -e "${BLUE}Building Docker image for linux/amd64...${NC}"
+docker buildx build --platform linux/amd64 -t $DOCKER_USERNAME/$IMAGE_NAME:$TAG_NAME --push .
 
 echo -e "${GREEN}=== Deployment complete! ===${NC}"
 echo -e "${YELLOW}Next steps:${NC}"
