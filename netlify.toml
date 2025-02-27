@@ -9,6 +9,18 @@
   to = "https://slimthicc-yt-api-latest.onrender.com/api/:splat"
   status = 200
   force = true
+  # Add CORS headers to fix CORS issues
+  [redirects.headers]
+    Access-Control-Allow-Origin = "*"
+    Access-Control-Allow-Methods = "GET, POST, PUT, DELETE, OPTIONS"
+    Access-Control-Allow-Headers = "Origin, X-Requested-With, Content-Type, Accept"
+
+# Handle WebSocket connections
+[[redirects]]
+  from = "/ws/*"
+  to = "wss://slimthicc-yt-api-latest.onrender.com/ws/:splat"
+  status = 101
+  force = true
 
 # Handle SPA routing
 [[redirects]]

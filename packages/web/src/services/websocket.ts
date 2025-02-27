@@ -6,8 +6,17 @@ export class WebSocketService {
   private baseUrl: string
 
   constructor() {
-    // Use the exported WS_URL from the API service
-    this.baseUrl = `${WS_URL}/downloads`;
+    // Check if we're in production (deployed on Netlify)
+    const isProduction = import.meta.env.PROD;
+    
+    // In production, use relative WebSocket URL with wss protocol
+    // This will be proxied through Netlify's WebSocket proxy
+    if (isProduction) {
+      this.baseUrl = `/api/v1/downloads`;
+    } else {
+      // In development, use the absolute URL
+      this.baseUrl = `${WS_URL}/downloads`;
+    }
     
     console.log('WebSocket service initialized with base URL:', this.baseUrl);
   }
@@ -29,7 +38,22 @@ export class WebSocketService {
     // Create a new WebSocket connection
     return new Promise((resolve, reject) => {
       try {
-        const ws = new WebSocket(wsUrl)
+        // Determine the WebSocket protocol based on whether we're using a relative or absolute URL
+        const isRelativeUrl = wsUrl.startsWith('/');
+        
+        // For relative URLs, use the current protocol (ws or wss depending on http/https)
+        const protocol = isRelativeUrl
+          ? (window.location.protocol === 'https:' ? 'wss:' : 'ws:') 
+          : '';
+        
+        // Construct the full URL for relative paths
+        const fullWsUrl = isRelativeUrl
+          ? `${protocol}//${window.location.host}${wsUrl}`
+          : wsUrl;
+        
+        console.log(`Connecting to WebSocket with full URL: ${fullWsUrl}`);
+        
+        const ws = new WebSocket(fullWsUrl)
         
         ws.onopen = () => {
           console.log(`WebSocket connection opened for task ${taskId}`)

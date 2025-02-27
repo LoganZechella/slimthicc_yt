@@ -61,39 +61,21 @@ export const startDownload = createAsyncThunk(
       
       logApiCall(ENDPOINTS.DOWNLOADS, 'POST', { url: validUrl, format: request.format, quality: request.quality });
       
-      let response;
+      let data;
       try {
-        response = await fetch(ENDPOINTS.DOWNLOADS, {
+        // Use makeRequest function from API service instead of direct fetch
+        data = await makeRequest(ENDPOINTS.DOWNLOADS, {
           method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-          },
           body: JSON.stringify({
             url: validUrl,
             format: request.format || 'mp3',
             quality: request.quality || 'HIGH'
           })
         });
-        console.log('API response received with status:', response.status);
-      } catch (fetchError) {
-        console.error('Network error during fetch:', fetchError);
-        throw new Error(`Network error: ${fetchError instanceof Error ? fetchError.message : String(fetchError)}`);
-      }
-      
-      let data;
-      try {
-        // Check if response is ok before trying to parse JSON
-        if (!response.ok) {
-          const errorText = await response.text();
-          console.error('API error response:', errorText);
-          throw new Error(`Request failed with status ${response.status}: ${errorText}`);
-        }
-        
-        data = await response.json();
         console.log('API response data:', data);
-      } catch (jsonError) {
-        console.error('Error parsing response:', jsonError);
-        throw new Error(`Failed to parse response: ${jsonError instanceof Error ? jsonError.message : String(jsonError)}`);
+      } catch (error) {
+        console.error('API request failed:', error);
+        throw error;
       }
       
       // Validate required fields
