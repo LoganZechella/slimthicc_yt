@@ -18,10 +18,17 @@
     Content-Type = "text/plain"
     Content-Length = "0"
 
-# Handle WebSocket connections for download tasks
+# Handle WebSocket connections for download tasks - both path formats
 [[redirects]]
   from = "/api/v1/downloads/*/ws"
   to = "wss://slimthicc-yt-api-latest.onrender.com/api/v1/downloads/:splat/ws"
+  status = 101
+  force = true
+
+# Alternative WebSocket path format
+[[redirects]]
+  from = "/api/v1/downloads/ws/*"
+  to = "wss://slimthicc-yt-api-latest.onrender.com/api/v1/downloads/ws/:splat"
   status = 101
   force = true
 

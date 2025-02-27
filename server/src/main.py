@@ -57,6 +57,11 @@ async def cors_debug_middleware(request: Request, call_next):
     if request.method == "OPTIONS":
         logger.info(f"Received OPTIONS preflight request from {request.client.host} to {request.url.path}")
         logger.debug(f"Request headers: {dict(request.headers)}")
+    
+    # Debug WebSocket connection attempts
+    if request.url.path.endswith('/ws'):
+        logger.info(f"WebSocket connection attempt detected: {request.url.path} from {request.client.host}")
+        logger.debug(f"Request headers: {dict(request.headers)}")
 
     # Process the request and get the response
     response = await call_next(request)
@@ -65,6 +70,10 @@ async def cors_debug_middleware(request: Request, call_next):
     if request.method == "OPTIONS":
         # Log the response headers for debugging
         logger.info(f"Responding to OPTIONS request with headers: {dict(response.headers)}")
+    
+    # Log 404 responses for debugging
+    if response.status_code == 404:
+        logger.warning(f"404 Not Found: {request.method} {request.url.path}")
     
     return response
 
