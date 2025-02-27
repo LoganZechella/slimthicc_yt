@@ -18,6 +18,13 @@
     Content-Type = "text/plain"
     Content-Length = "0"
 
+# Handle WebSocket connections for download tasks
+[[redirects]]
+  from = "/api/v1/downloads/*/ws"
+  to = "wss://slimthicc-yt-api-latest.onrender.com/api/v1/downloads/:splat/ws"
+  status = 101
+  force = true
+
 # Redirect API calls to your backend (force HTTPS)
 [[redirects]]
   from = "/api/*"
@@ -34,7 +41,7 @@
     Access-Control-Max-Age = "86400"
     X-Origin-Server = "Netlify"
 
-# Handle WebSocket connections (force WSS)
+# Legacy WebSocket handler - keeping for backward compatibility
 [[redirects]]
   from = "/ws/*"
   to = "wss://slimthicc-yt-api-latest.onrender.com/ws/:splat"
