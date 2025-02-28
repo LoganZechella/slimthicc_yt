@@ -37,7 +37,7 @@ const ProgressBar = styled.div<{ $progress: number }>`
       if (props.$progress === 100) return props.theme.colors.success;
       return props.theme.colors.primary;
     }};
-    transition: width 0.3s ease;
+    transition: width 0.5s ease, background-color 0.3s ease;
   }
 `
 
@@ -82,6 +82,15 @@ const ErrorMessage = styled.div`
   font-size: 0.875rem;
   padding: 0.5rem;
   background: ${props => props.theme.colors.errorBg};
+  border-radius: 4px;
+`
+
+const SuccessMessage = styled.div`
+  color: ${props => props.theme.colors.success};
+  margin-top: 0.5rem;
+  font-size: 0.875rem;
+  padding: 0.5rem;
+  background: ${props => props.theme.colors.successBg || 'rgba(25, 135, 84, 0.1)'};
   border-radius: 4px;
 `
 
@@ -215,6 +224,15 @@ const RetryButton = styled.button`
   }
 `
 
+const DetailMessage = styled.div`
+  color: ${props => props.theme.colors.textSecondary};
+  margin-top: 0.5rem;
+  font-size: 0.875rem;
+  padding: 0.5rem;
+  background: ${props => props.theme.colors.backgroundAlt};
+  border-radius: 4px;
+`
+
 interface TaskDetails {
   strategy?: string;
   statusMessage?: string;
@@ -245,146 +263,114 @@ export const DownloadList: React.FC = () => {
     const activeTaskIds = Object.keys(tasksRef.current);
     console.log('Setting up WebSocket connections for tasks:', activeTaskIds);
     
-    // Setup a periodic status check for tasks
-    const statusCheckInterval = setInterval(() => {
-      activeTaskIds.forEach(taskId => {
-        const task = tasksRef.current[taskId];
-        if (!task) return;
-        
-        // Only check tasks that haven't completed
-        if (task.status !== 'complete' && task.status !== 'error') {
-          console.log(`Checking status for task ${taskId}`);
-          
-          // Fetch the current task status from the server
-          fetch(ENDPOINTS.DOWNLOAD(taskId))
-            .then(response => response.json())
-            .then(data => {
-              console.log(`Status check for task ${taskId}:`, data);
-              
-              // If status has changed, update it
-              if (data && data.status && data.status !== task.status) {
-                console.log(`Task ${taskId} status changed from ${task.status} to ${data.status}`);
-                
-                // If task is complete, make sure we update all necessary fields
-                if (data.status === 'complete') {
-                  console.log(`Task ${taskId} is now complete, updating details`);
-                  dispatch(taskUpdated({
-                    id: taskId,
-                    status: 'complete',
-                    progress: 100,
-                    output_path: data.output_path,
-                    updatedAt: new Date().toISOString()
-                  }));
-                } else {
-                  // For other status changes, just update the status
-                  dispatch(taskUpdated({
-                    id: taskId,
-                    status: data.status,
-                    progress: data.progress || task.progress,
-                    updatedAt: new Date().toISOString()
-                  }));
-                }
-              }
-            })
-            .catch(error => {
-              console.error(`Error checking status for task ${taskId}:`, error);
-            });
-        }
-      });
-    }, 10000); // Check every 10 seconds
-    
-    // Subscribe to WebSocket updates for each task
+    // First cleanup existing connections to prevent duplicates
     activeTaskIds.forEach(taskId => {
-      const task = tasksRef.current[taskId];
-      if (!task) return;
+      if (websocketService.isSubscribed(taskId)) {
+        console.log(`Unsubscribing from task ${taskId} to prevent duplicates`);
+        websocketService.unsubscribeFromTask(taskId);
+      }
+    });
+    
+    // Create subscriptions for all tasks in the Redux store
+    activeTaskIds.forEach(taskId => {
+      console.log(`Setting up WebSocket subscription for task ${taskId}`);
       
-      // Create connection status callback
-      const connectionStatusCallback = (status: 'connecting' | 'connected' | 'disconnected') => {
-        console.log(`Connection status update for task ${taskId}: ${status}`);
+      const handleTaskUpdate = (data: any) => {
+        if (!data) return;
         
-        // Only dispatch if component is still mounted and task exists
-        if (tasksRef.current[taskId]) {
-          dispatch(taskUpdated({
-            id: taskId,
-            connectionStatus: status,
-            updatedAt: new Date().toISOString()
-          }));
+        console.log(`WebSocket update for task ${taskId}:`, data);
+        
+        const taskUpdateData: any = {
+          id: taskId,
+          updatedAt: new Date().toISOString()
+        };
+        
+        // Extract progress information (ensure progress is always a number)
+        if (typeof data.progress === 'number') {
+          taskUpdateData.progress = data.progress;
+        } else if (typeof data.progress === 'string') {
+          // Parse string to number if needed
+          taskUpdateData.progress = parseFloat(data.progress) || 0;
         }
+        
+        // Extract status information if present
+        if (data.status) {
+          taskUpdateData.status = data.status;
+        }
+        
+        // Extract detailed information if available
+        if (data.details) {
+          // Store details in local state
+          setTaskDetails(prev => {
+            const currentDetails = prev[taskId] || {};
+            const newDetails = {
+              ...currentDetails,
+              ...data.details
+            };
+            
+            // Log detailed status updates for debugging
+            if (data.details.statusMessage && data.details.statusMessage !== currentDetails.statusMessage) {
+              console.log(`Status message updated for task ${taskId}: ${data.details.statusMessage}`);
+            }
+            
+            return {
+              ...prev,
+              [taskId]: newDetails
+            };
+          });
+        }
+        
+        // Handle errors
+        if (data.error) {
+          // Make error messages more user-friendly
+          let userFriendlyError = data.error;
+          
+          // Replace technical error messages with user-friendly ones
+          if (data.error.includes("Download completed but tracks saved in /app/downloads")) {
+            userFriendlyError = "Your playlist has been downloaded successfully! Click the Download button to get your tracks.";
+          } else if (data.error.includes("File not found")) {
+            userFriendlyError = "We couldn't find the downloaded file. Please try downloading again.";
+          } else if (data.error.includes("Download failed")) {
+            userFriendlyError = "Download failed. Please check the URL and try again.";
+          }
+          
+          taskUpdateData.error = userFriendlyError;
+        }
+        
+        // Dispatch the update to Redux
+        dispatch(taskUpdated(taskUpdateData));
       };
       
-      websocketService.subscribeToTask(taskId, (data: any) => {
-        // Skip ping/pong and connection status messages
-        if (data.type === 'ping' || data.type === 'pong' || data.type === 'connection_status') {
-          return;
-        }
-        
-        console.log(`Received WebSocket data for task ${taskId}:`, data);
-        
-        // First check if the task still exists in Redux store
-        if (!tasksRef.current[taskId]) {
-          console.warn(`Received WebSocket data for non-existent task with ID: ${taskId}`);
-          return;
-        }
-        
-        // Extract properties from data
-        const { progress, status, error, details, output_path } = data;
-        
-        // Create update object with only fields that changed
-        const update: Partial<DownloadTask> & { id: string } = { id: taskId };
-        
-        if (progress !== undefined) {
-          // Ensure progress is a number between 0-100
-          update.progress = typeof progress === 'number' ? Math.min(Math.max(0, progress), 100) : 0;
-          console.log(`Updating progress for task ${taskId} to ${update.progress}%`);
-        }
-        
-        if (status && isValidTaskStatus(status)) {
-          update.status = status;
-          console.log(`Updating status for task ${taskId} to ${status}`);
-        }
-        
-        if (error) {
-          update.error = error;
-        }
-
-        if (output_path) {
-          update.output_path = output_path;
-          console.log(`Output path received for task ${taskId}: ${output_path}`);
-        }
-        
-        // Update Redux if we have changes
-        if (Object.keys(update).length > 1) { // More than just the ID
-          update.updatedAt = new Date().toISOString();
-          dispatch(taskUpdated(update));
-
-          // If status changed to complete, log this event
-          if (status === 'complete') {
-            console.log(`Task ${taskId} marked as complete`);
-          }
-        }
-        
-        // Store additional details locally if present
-        if (details) {
-          setTaskDetails(prev => ({
-            ...prev,
-            [taskId]: {
-              ...prev[taskId],
-              ...details
-            }
+      const handleConnectionStatus = (status: string) => {
+        console.log(`WebSocket connection status for task ${taskId}: ${status}`);
+        dispatch(taskUpdated({
+          id: taskId,
+          connectionStatus: status as any,
+          updatedAt: new Date().toISOString()
+        }));
+      };
+      
+      websocketService.subscribeToTask(taskId, handleTaskUpdate, handleConnectionStatus)
+        .catch(error => {
+          console.error(`Error setting up WebSocket for task ${taskId}:`, error);
+          
+          // Update Redux with connection error
+          dispatch(taskUpdated({
+            id: taskId,
+            connectionStatus: 'disconnected',
+            updatedAt: new Date().toISOString()
           }));
-        }
-      }, connectionStatusCallback);
+        });
     });
-
-    // Cleanup subscriptions and intervals
+    
+    // Cleanup subscriptions when component unmounts
     return () => {
-      console.log('Cleaning up WebSocket connections and intervals');
-      clearInterval(statusCheckInterval);
       activeTaskIds.forEach(taskId => {
+        console.log(`Cleaning up WebSocket subscription for task ${taskId}`);
         websocketService.unsubscribeFromTask(taskId);
       });
     };
-  }, [dispatch]);  // Only re-run this effect when dispatch changes, not when tasks change
+  }, [dispatch]);
 
   // Type guard for TaskStatus
   const isValidTaskStatus = (status: string): status is TaskStatus => {
@@ -620,9 +606,20 @@ export const DownloadList: React.FC = () => {
               )}
             </TaskActions>
             
-            {task.error && (
+            {/* Display detailed status message if available */}
+            {taskDetails[task.id]?.statusMessage && task.status !== 'complete' && task.status !== 'error' && (
+              <DetailMessage>
+                {taskDetails[task.id].statusMessage}
+              </DetailMessage>
+            )}
+            
+            {task.error && task.error.includes("Your playlist has been downloaded successfully") ? (
+              <SuccessMessage>
+                {task.error}
+              </SuccessMessage>
+            ) : task.error && (
               <ErrorMessage>
-                Error: {task.error}
+                {task.error}
                 {task.connectionStatus === 'disconnected' && (
                   <div>Connection lost. Please reload the page to retry.</div>
                 )}
@@ -676,6 +673,12 @@ export const DownloadList: React.FC = () => {
                   <DetailItem>
                     <DetailLabel>Strategy:</DetailLabel>
                     <DetailValue>{taskDetails[task.id].strategy}</DetailValue>
+                  </DetailItem>
+                )}
+                {taskDetails[task.id]?.statusMessage && (
+                  <DetailItem>
+                    <DetailLabel>Status:</DetailLabel>
+                    <DetailValue>{taskDetails[task.id].statusMessage}</DetailValue>
                   </DetailItem>
                 )}
                 {task.output_path && (

@@ -182,7 +182,7 @@ class WebsocketManager:
                         del self.active_connections[client_id]
                         if client_id in self.connection_timestamps:
                             del self.connection_timestamps[client_id]
-                        logger.info(f"Removed empty client entry for {client_id}")
+                            logger.info(f"Removed empty client entry for {client_id}")
         else:
             logger.warning(f"No active connections for client {client_id}")
         

@@ -25,6 +25,11 @@ export class WebSocketService {
     window.addEventListener('beforeunload', this.cleanup);
   }
   
+  // Check if a task is already subscribed
+  isSubscribed(taskId: string): boolean {
+    return this.callbacks.has(taskId);
+  }
+  
   private handleOnline = () => {
     console.log('[WebSocketService] Network is online, reconnecting WebSockets');
     // Reconnect all existing tasks
