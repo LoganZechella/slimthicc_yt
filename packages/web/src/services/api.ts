@@ -81,19 +81,74 @@ export async function makeRequest(url: string, options: RequestInit = {}) {
     
     console.log('Fetch options:', JSON.stringify(fetchOptions, null, 2));
     
-    const response = await fetch(normalizedUrl, fetchOptions);
+    // Implement timeout for fetch requests to prevent hanging
+    const timeoutPromise = new Promise((_, reject) => {
+      setTimeout(() => reject(new Error('Request timeout after 30s')), 30000);
+    });
+    
+    // Use Promise.race to implement timeout
+    const response = await Promise.race([
+      fetch(normalizedUrl, fetchOptions),
+      timeoutPromise
+    ]) as Response;
 
     // Try to parse JSON response
-    const data = await response.json().catch(() => ({}));
+    let data;
+    try {
+      data = await response.json();
+    } catch (jsonError) {
+      console.warn('Response was not JSON:', jsonError);
+      // For non-JSON responses, return an empty object with status
+      data = { 
+        status: response.status, 
+        statusText: response.statusText,
+        isJson: false 
+      };
+    }
     
     // Check for error response
     if (!response.ok) {
-      throw new Error(data.detail || `Request failed with status ${response.status}`);
+      throw new Error(data.detail || `Request failed with status ${response.status}: ${response.statusText}`);
     }
 
     return data;
   } catch (error) {
     console.error('API request failed:', error);
+    
+    // Retry with absolute URL for certain errors that might be proxy-related
+    if (isProduction && 
+        error instanceof Error && 
+        error.message?.includes('Failed to fetch') && 
+        !url.startsWith('https://')) {
+      console.log('Attempting fallback to direct backend URL...');
+      try {
+        // Force HTTPS for the backend URL
+        const directUrl = `https://slimthicc-yt-api-latest.onrender.com${API_V1_PATH}${url.startsWith('/') ? url : `/${url}`}`;
+        console.log(`Retrying with direct URL: ${directUrl}`);
+        
+        const directResponse = await fetch(directUrl, {
+          ...options,
+          mode: 'cors',
+          headers: {
+            'Content-Type': 'application/json',
+            'Accept': 'application/json',
+            ...options.headers,
+          }
+        });
+        
+        const data = await directResponse.json().catch(() => ({}));
+        
+        if (!directResponse.ok) {
+          throw new Error(data.detail || `Direct request failed with status ${directResponse.status}`);
+        }
+        
+        return data;
+      } catch (directError) {
+        console.error('Direct API request also failed:', directError);
+        throw directError;
+      }
+    }
+    
     if (error instanceof Error) {
       throw error;
     }

@@ -154,6 +154,20 @@ export const startDownload = createAsyncThunk(
             connectionStatus: status,
             updatedAt: new Date().toISOString()
           }));
+          
+          // If disconnected, update task status to indicate connection issues
+          if (status === 'disconnected') {
+            // Only update if it's not already complete or error
+            const currentTask = dispatch(getTaskStatus(taskId)) as any;
+            if (currentTask && !['complete', 'error'].includes(currentTask.status)) {
+              dispatch(taskUpdated({
+                id: taskId,
+                status: 'queued',
+                error: 'Lost connection to server. Reconnecting...',
+                updatedAt: new Date().toISOString()
+              }));
+            }
+          }
         };
         
         await websocketService.subscribeToTask(taskId, (data: any) => {
@@ -207,6 +221,7 @@ export const startDownload = createAsyncThunk(
         dispatch(taskUpdated({
           id: taskId,
           connectionStatus: 'disconnected',
+          error: 'Failed to establish WebSocket connection for updates. Please refresh the page.',
           updatedAt: new Date().toISOString()
         }));
       }

@@ -77,7 +77,9 @@ export class WebSocketService {
       return Promise.resolve()
     }
 
-    const wsUrl = `${this.baseUrl}/${taskId}/ws`
+    // Try multiple endpoint patterns in sequence if needed
+    // This increases resilience if the server API changes
+    const wsUrl = `${this.baseUrl}/${taskId}/ws`;
     console.log(`[WebSocketService] Connecting to WebSocket: ${wsUrl}`)
 
     // Store the callbacks
@@ -127,6 +129,18 @@ export class WebSocketService {
           
           // Set up ping interval to keep connection alive
           this.setupPingInterval(taskId, ws);
+          
+          // Send an initial "hello" message to the server to request current status
+          try {
+            ws.send(JSON.stringify({ 
+              type: 'hello', 
+              timestamp: Date.now(),
+              taskId: taskId
+            }));
+            console.log(`[WebSocketService] Sent initial hello message for task ${taskId}`);
+          } catch (error) {
+            console.error(`[WebSocketService] Error sending hello message for task ${taskId}:`, error);
+          }
           
           resolve()
         }
