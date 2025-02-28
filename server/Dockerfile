@@ -64,9 +64,6 @@ RUN chown appuser:appuser /app/youtube.cookies && chmod 600 /app/youtube.cookies
 COPY . .
 RUN chown -R appuser:appuser /app
 
-# Make the entrypoint script executable
-RUN chmod +x /app/entrypoint.sh
-
 # Switch to non-root user
 USER appuser
 
@@ -75,7 +72,7 @@ EXPOSE 8000
 
 # Healthcheck to verify the application is running properly
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-  CMD curl -f http://localhost:8000/api/health || exit 1
+  CMD curl -f http://localhost:8000/health || exit 1
 
-# Use our entrypoint script
-ENTRYPOINT ["/app/entrypoint.sh"] 
+# Start the FastAPI application directly with uvicorn
+CMD ["gunicorn", "-k", "uvicorn.workers.UvicornWorker", "--workers", "4", "--bind", "0.0.0.0:8000", "src.main:app"] 

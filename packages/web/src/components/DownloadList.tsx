@@ -3,7 +3,7 @@ import styled from 'styled-components'
 import { useSelector, useDispatch } from 'react-redux'
 import { RootState } from '../store'
 import { taskUpdated, DownloadTask } from '../store/downloads'
-import { websocketService } from '../services/websocket'
+import websocketService from '../services/websocket'
 import { logger } from '../utils/logger'
 import { ENDPOINTS } from '../services/api'
 
@@ -163,6 +163,65 @@ const StatusMessage = styled.div`
   margin-top: 0.5rem;
 `
 
+const ConnectionStatusBadge = styled.span<{ $status?: 'connecting' | 'connected' | 'disconnected' }>`
+  padding: 0.25rem 0.5rem;
+  border-radius: 4px;
+  font-size: 0.75rem;
+  margin-left: 0.5rem;
+  background: ${props => {
+    switch (props.$status) {
+      case 'connected':
+        return props.theme.colors.success + '33'; // Add transparency
+      case 'connecting':
+        return props.theme.colors.warning + '33';
+      case 'disconnected':
+        return props.theme.colors.error + '33';
+      default:
+        return props.theme.colors.background;
+    }
+  }};
+  color: ${props => {
+    switch (props.$status) {
+      case 'connected':
+        return props.theme.colors.success;
+      case 'connecting':
+        return props.theme.colors.warning;
+      case 'disconnected':
+        return props.theme.colors.error;
+      default:
+        return props.theme.colors.textSecondary;
+    }
+  }};
+  border: 1px solid ${props => {
+    switch (props.$status) {
+      case 'connected':
+        return props.theme.colors.success;
+      case 'connecting':
+        return props.theme.colors.warning;
+      case 'disconnected':
+        return props.theme.colors.error;
+      default:
+        return props.theme.colors.border;
+    }
+  }};
+`
+
+const RetryButton = styled.button`
+  background: ${props => props.theme.colors.warning};
+  color: white;
+  border: none;
+  border-radius: 4px;
+  padding: 0.5rem 1rem;
+  font-size: 0.875rem;
+  cursor: pointer;
+  transition: opacity 0.2s;
+  margin-top: 0.5rem;
+
+  &:hover {
+    opacity: 0.9;
+  }
+`
+
 interface TaskDetails {
   strategy?: string;
   statusMessage?: string;
@@ -183,44 +242,76 @@ export const DownloadList: React.FC = () => {
   useEffect(() => {
     // Subscribe to WebSocket updates for each task
     Object.keys(tasks).forEach(taskId => {
-      websocketService.subscribeToTask(taskId, (progress: number, status: string, error?: string, details?: any) => {
-        const task = tasks[taskId]
-        if (task && isValidTaskStatus(status)) {
-          // Update task in Redux store
-          dispatch(taskUpdated({
-            ...task,
-            progress,
-            status,
-            error,
-            updatedAt: new Date().toISOString()
-          }))
-          
-          // Store additional details locally
-          if (details) {
-            setTaskDetails(prev => ({
-              ...prev,
-              [taskId]: {
-                ...prev[taskId],
-                ...details
-              }
-            }))
-          }
+      const task = tasks[taskId];
+      if (!task) return;
+      
+      // Create connection status callback
+      const connectionStatusCallback = (status: 'connecting' | 'connected' | 'disconnected') => {
+        console.log(`Connection status update for task ${taskId}: ${status}`);
+        dispatch(taskUpdated({
+          id: taskId,
+          connectionStatus: status,
+          updatedAt: new Date().toISOString()
+        }));
+      };
+      
+      websocketService.subscribeToTask(taskId, (data: any) => {
+        // Skip ping/pong and connection status messages
+        if (data.type === 'ping' || data.type === 'pong' || data.type === 'connection_status') {
+          return;
         }
-      })
-    })
+        
+        console.log(`Received WebSocket data for task ${taskId}:`, data);
+        
+        // Extract properties from data
+        const { progress, status, error, details } = data;
+        
+        // Create update object with only fields that changed
+        const update: Partial<DownloadTask> & { id: string } = { id: taskId };
+        
+        if (progress !== undefined) {
+          update.progress = progress;
+        }
+        
+        if (status && isValidTaskStatus(status)) {
+          update.status = status;
+        }
+        
+        if (error) {
+          update.error = error;
+        }
+        
+        // Update Redux if we have changes
+        if (Object.keys(update).length > 1) { // More than just the ID
+          update.updatedAt = new Date().toISOString();
+          dispatch(taskUpdated(update));
+        }
+        
+        // Store additional details locally if present
+        if (details) {
+          setTaskDetails(prev => ({
+            ...prev,
+            [taskId]: {
+              ...prev[taskId],
+              ...details
+            }
+          }));
+        }
+      }, connectionStatusCallback);
+    });
 
     // Cleanup subscriptions
     return () => {
       Object.keys(tasks).forEach(taskId => {
-        websocketService.unsubscribeFromTask(taskId)
-      })
-    }
-  }, [tasks, dispatch])
+        websocketService.unsubscribeFromTask(taskId);
+      });
+    };
+  }, [tasks, dispatch]);
 
   // Type guard for TaskStatus
   const isValidTaskStatus = (status: string): status is TaskStatus => {
-    return ['queued', 'downloading', 'processing', 'complete', 'error'].includes(status)
-  }
+    return ['queued', 'downloading', 'processing', 'complete', 'error'].includes(status);
+  };
 
   const handleDownload = async (taskId: string) => {
     try {
@@ -236,209 +327,204 @@ export const DownloadList: React.FC = () => {
         updatedAt: new Date().toISOString()
       }));
       
-      // Include a timestamp to avoid browser caching
-      const timestamp = new Date().getTime();
-      const url = `${ENDPOINTS.DOWNLOAD_FILE(taskId)}?t=${timestamp}`;
-      logger.info(`Fetching file from ${url}`);
-      
-      const response = await fetch(url);
-      
-      if (!response.ok) {
-        const errorText = await response.text();
-        logger.error(`Download failed with status ${response.status}: ${errorText}`);
-        throw new Error(`Download failed: ${response.status} ${errorText}`);
-      }
-      
-      // Get content type and size for logging
-      const contentType = response.headers.get('Content-Type') || 'application/octet-stream';
-      const contentLength = response.headers.get('Content-Length');
-      logger.info(`Received response: type=${contentType}, size=${contentLength || 'unknown'} bytes`);
-      
-      // Get the filename from the Content-Disposition header if available
-      const contentDisposition = response.headers.get('Content-Disposition');
-      let filename = 'download';
-      if (contentDisposition) {
-        const matches = /filename[^;=\n]*=((['"]).*?\2|[^;\n]*)/.exec(contentDisposition);
-        if (matches != null && matches[1]) {
-          filename = matches[1].replace(/['"]/g, '');
-        }
-      }
-      
-      logger.info(`Downloading file: ${filename}, type: ${contentType}`);
-      
-      // Create a blob from the response and trigger download
-      const blob = await response.blob();
-      const downloadUrl = window.URL.createObjectURL(blob);
-      
-      // Use the download attribute of an anchor element
-      const a = document.createElement('a');
-      a.href = downloadUrl;
-      a.download = filename;
-      a.style.display = 'none';
-      document.body.appendChild(a);
-      
-      // Trigger the download
-      logger.info(`Triggering download with filename: ${filename}`);
-      a.click();
-      
-      // Clean up
-      setTimeout(() => {
-        window.URL.revokeObjectURL(downloadUrl);
-        document.body.removeChild(a);
-        logger.info(`Download cleanup complete for ${filename}`);
-      }, 100);
-      
-      logger.info(`Download process completed for task ${taskId}`);
+      // Redirect to the download URL
+      const downloadUrl = ENDPOINTS.DOWNLOAD_FILE(taskId);
+      logger.info(`Opening download URL: ${downloadUrl}`);
+      window.open(downloadUrl, '_blank');
     } catch (error) {
-      logger.error(`Error downloading file: ${error instanceof Error ? error.message : String(error)}`);
-      
-      // Show error message to the user
-      dispatch(taskUpdated({
-        ...tasks[taskId],
-        id: taskId,
-        error: error instanceof Error ? error.message : 'Failed to download file',
-        status: 'error',
-        updatedAt: new Date().toISOString()
-      }));
+      logger.error(`Error downloading task ${taskId}:`, error);
     }
-  }
+  };
 
-  const toggleTaskExpanded = (taskId: string) => {
+  const toggleExpanded = (taskId: string) => {
     setExpandedTasks(prev => ({
       ...prev,
       [taskId]: !prev[taskId]
-    }))
-  }
+    }));
+  };
 
-  const getStatusDetails = (task: DownloadTask, details?: TaskDetails) => {
-    // If we have a specific status message from the server, use it
-    if (details?.statusMessage) {
-      return details.statusMessage;
-    }
-    
-    // Otherwise, use default messages based on status
-    switch (task.status) {
-      case 'downloading':
-        return `Downloading audio${details?.strategy ? ` using ${details.strategy}` : ''}...`;
-      case 'processing':
-        return 'Processing audio file...';
-      case 'complete':
-        return 'Download complete! Click the download button to save the file.';
-      case 'error':
-        return task.error || 'An error occurred during download.';
-      default:
-        return 'Waiting to start download...';
-    }
-  }
-
-  const formatDate = (dateString: string) => {
+  // Function to reconnect a specific task
+  const handleReconnect = async (taskId: string) => {
     try {
-      const date = new Date(dateString);
-      return date.toLocaleString();
-    } catch (e) {
-      return dateString;
+      console.log(`Attempting to reconnect WebSocket for task ${taskId}`);
+      
+      // First unsubscribe to clean up any existing connection
+      websocketService.unsubscribeFromTask(taskId);
+      
+      // Create connection status callback
+      const connectionStatusCallback = (status: 'connecting' | 'connected' | 'disconnected') => {
+        console.log(`Connection status update for task ${taskId}: ${status}`);
+        dispatch(taskUpdated({
+          id: taskId,
+          connectionStatus: status,
+          updatedAt: new Date().toISOString()
+        }));
+      };
+      
+      // Set status to connecting
+      dispatch(taskUpdated({
+        id: taskId,
+        connectionStatus: 'connecting',
+        updatedAt: new Date().toISOString()
+      }));
+      
+      // Resubscribe to WebSocket updates
+      await websocketService.subscribeToTask(taskId, (data: any) => {
+        // Skip ping/pong and connection status messages
+        if (data.type === 'ping' || data.type === 'pong' || data.type === 'connection_status') {
+          return;
+        }
+        
+        console.log(`Received WebSocket data for task ${taskId}:`, data);
+        
+        // Extract properties from data
+        const { progress, status, error, details } = data;
+        
+        // Create update object with only fields that changed
+        const update: Partial<DownloadTask> & { id: string } = { id: taskId };
+        
+        if (progress !== undefined) {
+          update.progress = progress;
+        }
+        
+        if (status && isValidTaskStatus(status)) {
+          update.status = status;
+        }
+        
+        if (error) {
+          update.error = error;
+        }
+        
+        // Update Redux if we have changes
+        if (Object.keys(update).length > 1) { // More than just the ID
+          update.updatedAt = new Date().toISOString();
+          dispatch(taskUpdated(update));
+        }
+        
+        // Store additional details locally if present
+        if (details) {
+          setTaskDetails(prev => ({
+            ...prev,
+            [taskId]: {
+              ...prev[taskId],
+              ...details
+            }
+          }));
+        }
+      }, connectionStatusCallback);
+      
+      console.log(`Reconnection attempt for task ${taskId} successful`);
+    } catch (error) {
+      console.error(`Failed to reconnect WebSocket for task ${taskId}:`, error);
+      dispatch(taskUpdated({
+        id: taskId,
+        connectionStatus: 'disconnected',
+        updatedAt: new Date().toISOString()
+      }));
     }
-  }
-
-  const formatFileSize = (bytes?: number) => {
-    if (bytes === undefined) return 'Unknown';
-    
-    const units = ['B', 'KB', 'MB', 'GB'];
-    let size = bytes;
-    let unitIndex = 0;
-    
-    while (size >= 1024 && unitIndex < units.length - 1) {
-      size /= 1024;
-      unitIndex++;
-    }
-    
-    return `${size.toFixed(1)} ${units[unitIndex]}`;
-  }
+  };
 
   if (Object.keys(tasks).length === 0) {
     return (
       <DownloadListContainer>
-        <div style={{ textAlign: 'center', color: '#666', padding: '2rem' }}>
-          No downloads yet
-        </div>
+        <p>No downloads yet. Try downloading a YouTube video or Spotify track!</p>
       </DownloadListContainer>
-    )
+    );
   }
 
   return (
     <DownloadListContainer>
-      {Object.entries(tasks).map(([id, task]) => {
-        const details = taskDetails[id];
-        
-        return (
-          <DownloadItem key={id}>
-            <TaskTitle>{task.title || task.url}</TaskTitle>
-            {task.title && <TaskSubtitle>{task.url}</TaskSubtitle>}
+      {Object.values(tasks)
+        .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
+        .map(task => (
+          <DownloadItem key={task.id}>
+            <TaskTitle>
+              {task.title || 'Download in progress...'}
+              <ConnectionStatusBadge $status={task.connectionStatus}>
+                {task.connectionStatus || 'unknown'}
+              </ConnectionStatusBadge>
+            </TaskTitle>
+            
+            <TaskSubtitle>
+              {task.author ? `By ${task.author}` : ''}
+              {task.format && ` • ${task.format.toUpperCase()}`}
+              {task.quality && ` • ${task.quality}`}
+            </TaskSubtitle>
+            
             <ProgressBar $progress={task.progress} />
+            
             <TaskActions>
               <StatusBadge $status={task.status}>
-                {task.status}
+                {task.status.charAt(0).toUpperCase() + task.status.slice(1)}
               </StatusBadge>
-              <div>
-                <span style={{ marginRight: '1rem' }}>{task.progress.toFixed(1)}%</span>
-                {task.status === 'complete' && (
-                  <DownloadButton onClick={() => handleDownload(id)}>
-                    Download
-                  </DownloadButton>
-                )}
-              </div>
+              
+              {task.status === 'complete' && (
+                <DownloadButton 
+                  onClick={() => handleDownload(task.id)}
+                  disabled={task.connectionStatus === 'disconnected'}
+                >
+                  Download
+                </DownloadButton>
+              )}
             </TaskActions>
             
-            <StatusMessage>
-              {getStatusDetails(task, details)}
-              <ExpandButton onClick={() => toggleTaskExpanded(id)}>
-                {expandedTasks[id] ? 'Hide Details' : 'Show Details'}
-              </ExpandButton>
-            </StatusMessage>
+            {task.error && (
+              <ErrorMessage>
+                Error: {task.error}
+                {task.connectionStatus === 'disconnected' && (
+                  <div>Connection lost. Please reload the page to retry.</div>
+                )}
+              </ErrorMessage>
+            )}
             
-            {expandedTasks[id] && (
+            {task.connectionStatus === 'disconnected' && !task.error && (
+              <ErrorMessage>
+                WebSocket connection lost. Real-time updates unavailable.
+                <RetryButton onClick={() => handleReconnect(task.id)}>
+                  Reconnect
+                </RetryButton>
+              </ErrorMessage>
+            )}
+            
+            <ExpandButton onClick={() => toggleExpanded(task.id)}>
+              {expandedTasks[task.id] ? 'Hide Details' : 'Show Details'}
+            </ExpandButton>
+            
+            {expandedTasks[task.id] && (
               <DetailPanel>
                 <DetailItem>
-                  <DetailLabel>Task ID:</DetailLabel>
-                  <DetailValue>{id}</DetailValue>
+                  <DetailLabel>URL:</DetailLabel>
+                  <DetailValue>{task.url}</DetailValue>
                 </DetailItem>
-                {task.author && (
-                  <DetailItem>
-                    <DetailLabel>Author:</DetailLabel>
-                    <DetailValue>{task.author}</DetailValue>
-                  </DetailItem>
-                )}
+                <DetailItem>
+                  <DetailLabel>Task ID:</DetailLabel>
+                  <DetailValue>{task.id}</DetailValue>
+                </DetailItem>
                 <DetailItem>
                   <DetailLabel>Created:</DetailLabel>
-                  <DetailValue>{formatDate(task.createdAt)}</DetailValue>
+                  <DetailValue>{new Date(task.createdAt).toLocaleString()}</DetailValue>
                 </DetailItem>
                 <DetailItem>
                   <DetailLabel>Updated:</DetailLabel>
-                  <DetailValue>{formatDate(task.updatedAt)}</DetailValue>
+                  <DetailValue>{new Date(task.updatedAt).toLocaleString()}</DetailValue>
                 </DetailItem>
                 <DetailItem>
-                  <DetailLabel>Format:</DetailLabel>
-                  <DetailValue>{task.format.toUpperCase()} ({task.quality})</DetailValue>
+                  <DetailLabel>Status:</DetailLabel>
+                  <DetailValue>{task.status}</DetailValue>
                 </DetailItem>
-                {details?.strategy && (
+                <DetailItem>
+                  <DetailLabel>Progress:</DetailLabel>
+                  <DetailValue>{task.progress}%</DetailValue>
+                </DetailItem>
+                <DetailItem>
+                  <DetailLabel>Connection:</DetailLabel>
+                  <DetailValue>{task.connectionStatus || 'unknown'}</DetailValue>
+                </DetailItem>
+                {taskDetails[task.id]?.strategy && (
                   <DetailItem>
                     <DetailLabel>Strategy:</DetailLabel>
-                    <DetailValue>{details.strategy}</DetailValue>
+                    <DetailValue>{taskDetails[task.id].strategy}</DetailValue>
                   </DetailItem>
-                )}
-                {details?.fileInfo && (
-                  <>
-                    <DetailItem>
-                      <DetailLabel>File Size:</DetailLabel>
-                      <DetailValue>{formatFileSize(details.fileInfo.size)}</DetailValue>
-                    </DetailItem>
-                    {details.fileInfo.type && (
-                      <DetailItem>
-                        <DetailLabel>File Type:</DetailLabel>
-                        <DetailValue>{details.fileInfo.type}</DetailValue>
-                      </DetailItem>
-                    )}
-                  </>
                 )}
                 {task.output_path && (
                   <DetailItem>
@@ -446,23 +532,10 @@ export const DownloadList: React.FC = () => {
                     <DetailValue>{task.output_path}</DetailValue>
                   </DetailItem>
                 )}
-                {task.error && (
-                  <DetailItem>
-                    <DetailLabel>Error:</DetailLabel>
-                    <DetailValue>{task.error}</DetailValue>
-                  </DetailItem>
-                )}
               </DetailPanel>
             )}
-            
-            {task.error && !expandedTasks[id] && (
-              <ErrorMessage>
-                {task.error}
-              </ErrorMessage>
-            )}
           </DownloadItem>
-        );
-      })}
+        ))}
     </DownloadListContainer>
-  )
-} 
+  );
+}; 

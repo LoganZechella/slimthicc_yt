@@ -18,28 +18,6 @@
     Content-Type = "text/plain"
     Content-Length = "0"
 
-# Handle WebSocket connections for download tasks - handle all formats
-[[redirects]]
-  from = "/api/v1/downloads/*/ws"
-  to = "wss://slimthicc-yt-api-latest.onrender.com/api/v1/downloads/:splat/ws"
-  status = 101
-  force = true
-
-# Alternative WebSocket path format
-[[redirects]]
-  from = "/api/v1/downloads/ws/*"
-  to = "wss://slimthicc-yt-api-latest.onrender.com/api/v1/downloads/ws/:splat"
-  status = 101
-  force = true
-
-# General catch-all for any WebSocket path under downloads
-[[redirects]]
-  from = "/api/v1/downloads/*"
-  to = "wss://slimthicc-yt-api-latest.onrender.com/api/v1/downloads/:splat"
-  status = 101
-  force = true
-  conditions = {Upgrade = "websocket"}
-
 # Redirect API calls to your backend (force HTTPS)
 [[redirects]]
   from = "/api/*"
@@ -55,13 +33,6 @@
     Access-Control-Allow-Headers = "Origin, X-Requested-With, Content-Type, Accept, Authorization"
     Access-Control-Max-Age = "86400"
     X-Origin-Server = "Netlify"
-
-# Legacy WebSocket handler - keeping for backward compatibility
-[[redirects]]
-  from = "/ws/*"
-  to = "wss://slimthicc-yt-api-latest.onrender.com/ws/:splat"
-  status = 101
-  force = true
 
 # Handle SPA routing
 [[redirects]]

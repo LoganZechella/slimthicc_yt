@@ -30,12 +30,17 @@ export const ENDPOINTS = {
   DOWNLOAD_FILE: (taskId: string) => `${API_URL}/downloads/${taskId}/file`,
 };
 
-// WebSocket URL - always use absolute URL for WebSockets
+// WebSocket URL - IMPORTANT: always use absolute URL for WebSockets
+// WebSockets cannot go through Netlify proxies, so they must connect directly to backend
 // Ensure WebSocket URL always uses WSS (secure WebSockets)
-export const WS_BASE_URL = (import.meta.env.VITE_WS_URL || 'wss://slimthicc-yt-api-latest.onrender.com')
-  .replace(/^ws:\/\//i, 'wss://');
+const WS_DIRECT_URL = 'wss://slimthicc-yt-api-latest.onrender.com';
+export const WS_URL = `${WS_DIRECT_URL}${API_V1_PATH}`;
 
-export const WS_URL = `${WS_BASE_URL}${API_V1_PATH}`;
+// Log the configured URLs on startup
+console.log('[API Service] Configured with:');
+console.log(`  API URL: ${API_URL}`);
+console.log(`  WebSocket URL: ${WS_URL}`);
+console.log(`  Using relative URLs for API calls: ${shouldUseRelativeUrls}`);
 
 /**
  * Make an API request with proper error handling

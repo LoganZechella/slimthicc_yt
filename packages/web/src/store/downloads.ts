@@ -1,5 +1,5 @@
 import { createSlice, createAsyncThunk, PayloadAction } from '@reduxjs/toolkit'
-import { websocketService } from '../services/websocket'
+import websocketService from '../services/websocket'
 import { ENDPOINTS, makeRequest, logApiCall } from '../services/api'
 
 export type AudioQuality = 'HIGH' | 'MEDIUM' | 'LOW'
@@ -18,6 +18,7 @@ export interface DownloadTask {
   updatedAt: string
   error?: string
   output_path?: string
+  connectionStatus?: 'connecting' | 'connected' | 'disconnected'
 }
 
 export interface DownloadsState {
@@ -137,26 +138,77 @@ export const startDownload = createAsyncThunk(
         format: request.format || 'mp3',
         quality: request.quality || 'HIGH',
         createdAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString()
+        updatedAt: new Date().toISOString(),
+        connectionStatus: 'connecting'
       }));
 
       // Subscribe to WebSocket updates
       try {
         console.log('Attempting to connect to WebSocket for task:', taskId);
-        await websocketService.subscribeToTask(taskId, (progress: number, status: string) => {
-          console.log(`WebSocket update for task ${taskId}:`, { progress, status });
-          if (isValidTaskStatus(status)) {
-            dispatch(taskUpdated({
-              id: taskId,
-              progress,
-              status,
-              updatedAt: new Date().toISOString()
-            }))
+        
+        // Create connection status callback
+        const connectionStatusCallback = (status: 'connecting' | 'connected' | 'disconnected') => {
+          console.log(`WebSocket connection status for task ${taskId}: ${status}`);
+          dispatch(taskUpdated({
+            id: taskId,
+            connectionStatus: status,
+            updatedAt: new Date().toISOString()
+          }));
+        };
+        
+        await websocketService.subscribeToTask(taskId, (data: any) => {
+          // Skip non-status update messages
+          if (data.type === 'ping' || data.type === 'pong' || data.type === 'connection_status') {
+            return;
           }
-        });
-        console.log('WebSocket subscription successful');
+          
+          console.log(`WebSocket update for task ${taskId}:`, data);
+          
+          // Extract fields from the data object
+          const { progress, status, error, details } = data;
+          
+          // Construct an update with only the fields that are present
+          const update: Partial<DownloadTask> & { id: string } = { id: taskId };
+          
+          if (progress !== undefined) {
+            update.progress = progress;
+          }
+          
+          if (status && isValidTaskStatus(status)) {
+            update.status = status;
+          }
+          
+          if (error) {
+            update.error = error;
+          }
+          
+          if (details?.title) {
+            update.title = details.title;
+          }
+          
+          if (details?.author) {
+            update.author = details.author;
+          }
+          
+          if (details?.output_path) {
+            update.output_path = details.output_path;
+          }
+          
+          // Only dispatch if we have updates
+          if (Object.keys(update).length > 1) { // More than just the ID
+            update.updatedAt = new Date().toISOString();
+            dispatch(taskUpdated(update));
+          }
+        }, connectionStatusCallback);
+        
+        console.log('WebSocket subscription successful for task:', taskId);
       } catch (error) {
-        console.error('Failed to subscribe to WebSocket updates:', error)
+        console.error(`Failed to subscribe to WebSocket updates for task ${taskId}:`, error);
+        dispatch(taskUpdated({
+          id: taskId,
+          connectionStatus: 'disconnected',
+          updatedAt: new Date().toISOString()
+        }));
       }
 
       // Get initial task status
@@ -167,7 +219,7 @@ export const startDownload = createAsyncThunk(
         console.error('Failed to get initial task status:', error)
       }
 
-      return taskId
+      return { taskId, url: validUrl };
     } catch (error) {
       console.error('Error in startDownload thunk:', error);
       if (error instanceof Error) {
@@ -225,7 +277,7 @@ const downloadsSlice = createSlice({
       })
       .addCase(startDownload.fulfilled, (state, action) => {
         state.loading = false
-        state.activeTaskId = action.payload
+        state.activeTaskId = action.payload.taskId
       })
       .addCase(startDownload.rejected, (state, action) => {
         state.loading = false

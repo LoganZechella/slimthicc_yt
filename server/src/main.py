@@ -11,6 +11,9 @@ import logging
 import re
 import sys
 import uvicorn
+from fastapi.responses import JSONResponse
+import traceback
+import time
 
 # Configure logging
 logging.basicConfig(
@@ -36,16 +39,11 @@ app = FastAPI(
 # Log CORS settings
 logger.info(f"Configuring CORS with origins: {settings.CORS_ORIGINS}")
 
-# Add fallback for CORS settings if empty or missing
-if not settings.CORS_ORIGINS or len(settings.CORS_ORIGINS) == 0:
-    logger.warning("No CORS origins found in settings, using fallback with wildcard")
-    cors_origins = ["*"]
-    settings.CORS_ALLOW_ALL = True
-else:
-    cors_origins = settings.CORS_ORIGINS
-
-if "*" in cors_origins:
-    logger.warning("Allowing all origins with CORS wildcard '*'")
+# Always allow all origins for WebSocket connections
+# WebSocket connections must come directly from the browser to the server
+logger.warning("WebSocket connections require direct access - allowing all origins")
+cors_origins = ["*"]  # This ensures WebSocket connections work from any origin
+settings.CORS_ALLOW_ALL = True
 
 # Set up CORS middleware with improved handling of preflight requests
 app.add_middleware(
@@ -71,93 +69,148 @@ async def cors_debug_middleware(request: Request, call_next):
         logger.debug(f"Request headers: {dict(request.headers)}")
 
     # Process the request and get the response
-    response = await call_next(request)
+    try:
+        response = await call_next(request)
+        
+        # Add CORS headers to every response
+        if request.method == "OPTIONS":
+            # Log the response headers for debugging
+            logger.info(f"Responding to OPTIONS request with headers: {dict(response.headers)}")
+        
+        # Log 404 responses for debugging
+        if response.status_code == 404:
+            logger.warning(f"404 Not Found: {request.method} {request.url.path}")
+            
+        return response
+    except Exception as e:
+        logger.error(f"Unhandled exception in middleware: {str(e)}")
+        logger.error(traceback.format_exc())
+        return JSONResponse(
+            status_code=500,
+            content={"detail": "Internal server error"}
+        )
 
-    # Add CORS headers to every response
-    if request.method == "OPTIONS":
-        # Log the response headers for debugging
-        logger.info(f"Responding to OPTIONS request with headers: {dict(response.headers)}")
-    
-    # Log 404 responses for debugging
-    if response.status_code == 404:
-        logger.warning(f"404 Not Found: {request.method} {request.url.path}")
-    
-    return response
+# Global error handler for all routes
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception):
+    logger.error(f"Unhandled exception: {str(exc)}")
+    logger.error(traceback.format_exc())
+    return JSONResponse(
+        status_code=500,
+        content={"detail": f"Internal server error: {str(exc)}"}
+    )
 
 # Root-level WebSocket catch-all
 @app.websocket("/api/v1/downloads/{task_id}/ws")
-async def root_websocket_endpoint(websocket: WebSocket, task_id: str):
+async def websocket_endpoint(websocket: WebSocket, task_id: str):
     """
-    Root-level WebSocket endpoint for real-time task updates.
-    This is registered at the application level to ensure it captures all WebSocket connections.
+    WebSocket endpoint for real-time task updates
+    
+    Args:
+        websocket: The WebSocket connection
+        task_id: The task ID to subscribe to
     """
-    logger.info(f"ROOT WebSocket connection request for task {task_id} from {websocket.client.host}")
+    client_host = getattr(websocket.client, 'host', 'unknown')
+    logger.info(f"WebSocket connection request for task {task_id} from {client_host}")
+    logger.debug(f"WebSocket headers: {websocket.headers}")
     
     try:
-        # Accept the connection
-        await websocket_manager.connect(websocket, task_id)
-        logger.info(f"ROOT WebSocket connection accepted for task {task_id}")
+        # Log the connection attempt with extra debugging info
+        origin = websocket.headers.get('origin', 'unknown')
+        user_agent = websocket.headers.get('user-agent', 'unknown')
+        logger.info(f"WebSocket connection for task {task_id} from origin: {origin}, client: {client_host}, agent: {user_agent}")
         
-        from src.services.download_task_manager import download_task_manager
+        # Accept the connection through the websocket_manager
+        connection_accepted = await websocket_manager.connect(websocket, task_id)
         
-        # Send initial status
-        task = await download_task_manager.get_task(task_id)
-        if task:
-            initial_status = {
-                "id": task.id,
-                "status": task.status,
-                "progress": task.progress,
-                "title": task.title,
-                "author": task.author,
-                "error": task.error
-            }
-            await websocket.send_json(initial_status)
-            logger.info(f"ROOT Sent initial status for task {task_id}: {task.status}, progress: {task.progress}")
-        else:
-            logger.warning(f"ROOT Task {task_id} not found when sending initial status")
-            await websocket.send_json({"error": f"Task {task_id} not found"})
+        if not connection_accepted:
+            logger.error(f"Failed to accept WebSocket connection for task {task_id}")
+            await websocket.close(code=1011, reason="Failed to establish connection")
+            return
+            
+        logger.info(f"WebSocket connection established for task {task_id}")
         
-        # Keep the connection open and handle client messages
+        # Send initial connection status
+        try:
+            await websocket.send_json({
+                "type": "connection_status",
+                "status": "connected",
+                "task_id": task_id,
+                "timestamp": time.time()
+            })
+        except Exception as e:
+            logger.error(f"Error sending initial connection status: {e}")
+        
+        # Keep the connection alive
         try:
             while True:
-                # Wait for any message from the client (ping/keepalive)
+                # Wait for messages from the client
                 data = await websocket.receive_text()
-                logger.debug(f"ROOT Received message from client {task_id}: {data}")
                 
-                # Send current status on any client message
-                task = await download_task_manager.get_task(task_id)
-                if task:
-                    status_update = {
-                        "id": task.id,
-                        "status": task.status,
-                        "progress": task.progress,
-                        "title": task.title,
-                        "author": task.author,
-                        "error": task.error
-                    }
-                    await websocket.send_json(status_update)
-                    logger.debug(f"ROOT Sent status update for task {task_id}: {task.status}, progress: {task.progress}")
-                else:
-                    logger.warning(f"ROOT Task {task_id} not found when sending status update")
-                    await websocket.send_json({"error": f"Task {task_id} not found"})
+                try:
+                    message = json.loads(data)
+                    logger.debug(f"Received message from client for task {task_id}: {message}")
+                    
+                    # Handle ping messages
+                    if message.get("type") == "ping":
+                        await websocket.send_json({
+                            "type": "pong",
+                            "timestamp": message.get("timestamp"),
+                            "server_timestamp": time.time()
+                        })
+                        continue
+                    
+                    # Handle other message types
+                    message_type = message.get("type", "unknown")
+                    logger.debug(f"Processing message type: {message_type} for task {task_id}")
+                    
+                    # Get task status and send update
+                    from src.models.task import Task
+                    task = await Task.get_by_id(task_id)
+                    
+                    if task:
+                        status_update = {
+                            "status": task.status,
+                            "progress": task.progress,
+                            "timestamp": time.time()
+                        }
+                        
+                        # Include details if available
+                        if hasattr(task, 'details') and task.details:
+                            status_update["details"] = task.details
+                            
+                        # Include error if there is one
+                        if hasattr(task, 'error') and task.error:
+                            status_update["error"] = task.error
+                            
+                        await websocket.send_json(status_update)
+                        logger.debug(f"Sent status update for task {task_id}: {task.status}, progress: {task.progress}")
+                    else:
+                        logger.warning(f"Task {task_id} not found when sending status update")
+                        await websocket.send_json({"error": f"Task {task_id} not found"})
+                    
+                except json.JSONDecodeError:
+                    logger.warning(f"Received invalid JSON from client for task {task_id}: {data}")
+                except Exception as msg_error:
+                    logger.error(f"Error processing message for task {task_id}: {msg_error}", exc_info=True)
                 
-        except WebSocketDisconnect:
-            logger.info(f"ROOT WebSocket disconnected for task {task_id}")
+        except WebSocketDisconnect as disconnect_error:
+            logger.info(f"WebSocket disconnected for task {task_id}: code={getattr(disconnect_error, 'code', 'unknown')}")
         except Exception as ws_error:
-            logger.error(f"ROOT Error in WebSocket communication for task {task_id}: {ws_error}", exc_info=True)
+            logger.error(f"Error in WebSocket communication for task {task_id}: {ws_error}", exc_info=True)
         finally:
             # Clean up the connection
             await websocket_manager.disconnect(websocket, task_id)
-            logger.info(f"ROOT WebSocket connection closed for task {task_id}")
+            logger.info(f"WebSocket connection closed for task {task_id}")
             
     except Exception as e:
-        logger.error(f"ROOT Error in WebSocket connection setup for task {task_id}: {e}", exc_info=True)
+        logger.error(f"Error in WebSocket connection setup for task {task_id}: {e}", exc_info=True)
         # Ensure connection is closed on error
         try:
-            await websocket_manager.disconnect(websocket, task_id)
-            logger.info(f"ROOT WebSocket connection force closed after error for task {task_id}")
+            await websocket.close(code=1011, reason=f"Connection error: {str(e)[:50]}")
+            logger.info(f"WebSocket connection force closed after error for task {task_id}")
         except Exception as disconnect_error:
-            logger.error(f"ROOT Error disconnecting WebSocket for task {task_id}: {disconnect_error}")
+            logger.error(f"Error disconnecting WebSocket for task {task_id}: {disconnect_error}")
 
 # Root-level WebSocket catch-all with alternative pattern
 @app.websocket("/{path:path}")
@@ -166,7 +219,8 @@ async def global_fallback_websocket_endpoint(websocket: WebSocket, path: str):
     Fallback global WebSocket handler to catch all other connection attempts.
     Tries to extract task_id from the path using various methods.
     """
-    logger.info(f"Fallback WebSocket connection attempt for path: {path}")
+    client_host = getattr(websocket.client, 'host', 'unknown')
+    logger.info(f"Fallback WebSocket connection attempt for path: {path} from {client_host}")
     
     # Try multiple methods to extract task_id from the path
     task_id = None
@@ -215,16 +269,27 @@ async def global_fallback_websocket_endpoint(websocket: WebSocket, path: str):
     # If we cannot extract a task_id, reject the connection
     if not task_id:
         logger.error(f"Could not extract task_id from WebSocket path: {path}")
-        await websocket.accept()
-        await websocket.send_json({"error": "Invalid WebSocket path, could not extract task_id"})
-        await websocket.close()
+        try:
+            await websocket.accept()
+            await websocket.send_json({"error": "Invalid WebSocket path, could not extract task_id"})
+            await websocket.close(code=1003, reason="Invalid path")
+        except Exception as e:
+            logger.error(f"Error rejecting WebSocket connection: {e}")
         return
     
     logger.info(f"Fallback handler extracted task_id '{task_id}' from path '{path}'")
     
     try:
         # Accept the connection
-        await websocket_manager.connect(websocket, task_id)
+        connected = await websocket_manager.connect(websocket, task_id)
+        if not connected:
+            logger.error(f"Fallback: Failed to establish WebSocket connection for task {task_id}")
+            try:
+                await websocket.close(code=1011, reason="Failed to establish connection")
+            except Exception:
+                pass
+            return
+            
         logger.info(f"Fallback WebSocket connection accepted for task {task_id}")
         
         from src.services.download_task_manager import download_task_manager
@@ -252,6 +317,21 @@ async def global_fallback_websocket_endpoint(websocket: WebSocket, path: str):
                 data = await websocket.receive_text()
                 logger.debug(f"Received message from client {task_id}: {data} (fallback)")
                 
+                # Try to parse as JSON if possible
+                try:
+                    json_data = json.loads(data)
+                    message_type = json_data.get('type', '')
+                    
+                    # Handle ping messages
+                    if message_type == 'ping':
+                        await websocket.send_json({"type": "pong", "timestamp": json_data.get('timestamp')})
+                        logger.debug(f"Sent pong to client {task_id} (fallback)")
+                        continue
+                except Exception:
+                    # Not JSON or other error, treat as regular message
+                    pass
+                
+                # Send current status
                 task = await download_task_manager.get_task(task_id)
                 if task:
                     status_update = {
@@ -266,12 +346,13 @@ async def global_fallback_websocket_endpoint(websocket: WebSocket, path: str):
                 else:
                     await websocket.send_json({"error": f"Task {task_id} not found"})
                 
-        except WebSocketDisconnect:
-            logger.info(f"WebSocket disconnected for task {task_id} (fallback)")
+        except WebSocketDisconnect as disconnect_error:
+            logger.info(f"WebSocket disconnected for task {task_id}: code={getattr(disconnect_error, 'code', 'unknown')} (fallback)")
         except Exception as ws_error:
             logger.error(f"Error in WebSocket communication for task {task_id}: {ws_error} (fallback)", exc_info=True)
         finally:
             await websocket_manager.disconnect(websocket, task_id)
+            logger.info(f"WebSocket connection closed for task {task_id} (fallback)")
             
     except Exception as e:
         logger.error(f"Error in fallback WebSocket handler for path {path}: {e}", exc_info=True)
@@ -308,7 +389,7 @@ async def startup_db_client():
 @app.on_event("shutdown")
 async def shutdown_db_client():
     await close_mongo_connection()
-    logger.info("MongoDB connection closed")
+    logger.info("Disconnected from MongoDB")
 
 @app.get("/")
 async def root():
@@ -318,10 +399,9 @@ async def root():
         "status": "running"
     }
 
-# Add a health check endpoint
 @app.get("/health")
-async def health():
-    return {"status": "ok"}
+async def health_check():
+    return {"status": "healthy"}
 
 if __name__ == "__main__":
     # Run the app
