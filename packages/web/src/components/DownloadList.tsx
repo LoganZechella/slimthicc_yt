@@ -4,8 +4,7 @@ import { useSelector, useDispatch } from 'react-redux'
 import { RootState } from '../store'
 import { taskUpdated, DownloadTask } from '../store/downloads'
 import websocketService from '../services/websocket'
-import { logger } from '../utils/logger'
-import { ENDPOINTS } from '../services/api'
+import { ENDPOINTS, downloadFile } from '../services/api'
 
 const DownloadListContainer = styled.div`
   margin-top: 2rem;
@@ -246,6 +245,54 @@ export const DownloadList: React.FC = () => {
     const activeTaskIds = Object.keys(tasksRef.current);
     console.log('Setting up WebSocket connections for tasks:', activeTaskIds);
     
+    // Setup a periodic status check for tasks
+    const statusCheckInterval = setInterval(() => {
+      activeTaskIds.forEach(taskId => {
+        const task = tasksRef.current[taskId];
+        if (!task) return;
+        
+        // Only check tasks that haven't completed
+        if (task.status !== 'complete' && task.status !== 'error') {
+          console.log(`Checking status for task ${taskId}`);
+          
+          // Fetch the current task status from the server
+          fetch(ENDPOINTS.DOWNLOAD(taskId))
+            .then(response => response.json())
+            .then(data => {
+              console.log(`Status check for task ${taskId}:`, data);
+              
+              // If status has changed, update it
+              if (data && data.status && data.status !== task.status) {
+                console.log(`Task ${taskId} status changed from ${task.status} to ${data.status}`);
+                
+                // If task is complete, make sure we update all necessary fields
+                if (data.status === 'complete') {
+                  console.log(`Task ${taskId} is now complete, updating details`);
+                  dispatch(taskUpdated({
+                    id: taskId,
+                    status: 'complete',
+                    progress: 100,
+                    output_path: data.output_path,
+                    updatedAt: new Date().toISOString()
+                  }));
+                } else {
+                  // For other status changes, just update the status
+                  dispatch(taskUpdated({
+                    id: taskId,
+                    status: data.status,
+                    progress: data.progress || task.progress,
+                    updatedAt: new Date().toISOString()
+                  }));
+                }
+              }
+            })
+            .catch(error => {
+              console.error(`Error checking status for task ${taskId}:`, error);
+            });
+        }
+      });
+    }, 10000); // Check every 10 seconds
+    
     // Subscribe to WebSocket updates for each task
     activeTaskIds.forEach(taskId => {
       const task = tasksRef.current[taskId];
@@ -280,27 +327,40 @@ export const DownloadList: React.FC = () => {
         }
         
         // Extract properties from data
-        const { progress, status, error, details } = data;
+        const { progress, status, error, details, output_path } = data;
         
         // Create update object with only fields that changed
         const update: Partial<DownloadTask> & { id: string } = { id: taskId };
         
         if (progress !== undefined) {
-          update.progress = progress;
+          // Ensure progress is a number between 0-100
+          update.progress = typeof progress === 'number' ? Math.min(Math.max(0, progress), 100) : 0;
+          console.log(`Updating progress for task ${taskId} to ${update.progress}%`);
         }
         
         if (status && isValidTaskStatus(status)) {
           update.status = status;
+          console.log(`Updating status for task ${taskId} to ${status}`);
         }
         
         if (error) {
           update.error = error;
+        }
+
+        if (output_path) {
+          update.output_path = output_path;
+          console.log(`Output path received for task ${taskId}: ${output_path}`);
         }
         
         // Update Redux if we have changes
         if (Object.keys(update).length > 1) { // More than just the ID
           update.updatedAt = new Date().toISOString();
           dispatch(taskUpdated(update));
+
+          // If status changed to complete, log this event
+          if (status === 'complete') {
+            console.log(`Task ${taskId} marked as complete`);
+          }
         }
         
         // Store additional details locally if present
@@ -316,9 +376,10 @@ export const DownloadList: React.FC = () => {
       }, connectionStatusCallback);
     });
 
-    // Cleanup subscriptions
+    // Cleanup subscriptions and intervals
     return () => {
-      console.log('Cleaning up WebSocket connections for tasks:', activeTaskIds);
+      console.log('Cleaning up WebSocket connections and intervals');
+      clearInterval(statusCheckInterval);
       activeTaskIds.forEach(taskId => {
         websocketService.unsubscribeFromTask(taskId);
       });
@@ -332,24 +393,82 @@ export const DownloadList: React.FC = () => {
 
   const handleDownload = async (taskId: string) => {
     try {
-      logger.info(`Initiating download for task ${taskId}`);
+      console.log(`Initiating download for task ${taskId}`, tasks[taskId]);
       
-      // Show a loading state to the user
-      dispatch(taskUpdated({
-        ...tasks[taskId],
-        id: taskId,
-        status: 'complete',
-        progress: 100,
-        error: undefined,
-        updatedAt: new Date().toISOString()
-      }));
+      // Check if we have the output path from the server
+      const task = tasks[taskId];
       
+      if (!task) {
+        console.error(`Task ${taskId} not found in store`);
+        return;
+      }
+
       // Redirect to the download URL
       const downloadUrl = ENDPOINTS.DOWNLOAD_FILE(taskId);
-      logger.info(`Opening download URL: ${downloadUrl}`);
-      window.open(downloadUrl, '_blank');
+      console.log(`Downloading from URL: ${downloadUrl}`);
+      
+      // Log additional information to help debug
+      console.log(`Task details for download:`, {
+        id: task.id,
+        status: task.status,
+        progress: task.progress,
+        output_path: task.output_path
+      });
+
+      try {
+        // Use our specialized downloadFile function
+        const response = await downloadFile(downloadUrl);
+        
+        // Get filename from Content-Disposition header or use default
+        let filename = '';
+        const contentDisposition = response.headers.get('Content-Disposition');
+        if (contentDisposition) {
+          const match = contentDisposition.match(/filename="?([^"]+)"?/);
+          if (match && match[1]) {
+            filename = match[1];
+          }
+        }
+        
+        if (!filename) {
+          filename = task.title 
+            ? `${task.title}.${task.format}` 
+            : `download-${taskId}.${task.format}`;
+        }
+        
+        console.log(`Downloading file with name: ${filename}`);
+        
+        // Convert response to blob
+        const blob = await response.blob();
+        
+        // Create download link
+        const url = window.URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = filename;
+        document.body.appendChild(a);
+        a.click();
+        
+        // Cleanup
+        window.URL.revokeObjectURL(url);
+        document.body.removeChild(a);
+        
+        console.log(`Download completed for ${taskId}`);
+      } catch (downloadError) {
+        console.error('Download error:', downloadError);
+        
+        // Fallback to opening in a new tab if direct download fails
+        console.log('Falling back to new tab download');
+        window.open(downloadUrl, '_blank');
+      }
     } catch (error) {
-      logger.error(`Error downloading task ${taskId}:`, error);
+      console.error(`Error downloading task ${taskId}:`, error);
+      
+      // Update task with error information
+      dispatch(taskUpdated({
+        id: taskId,
+        error: error instanceof Error ? error.message : 'Failed to download file',
+        updatedAt: new Date().toISOString()
+      }));
     }
   };
 

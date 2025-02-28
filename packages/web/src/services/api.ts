@@ -106,4 +106,58 @@ export async function makeRequest(url: string, options: RequestInit = {}) {
  */
 export function logApiCall(endpoint: string, method: string, body?: any) {
   console.log(`API ${method} request to ${endpoint}`, body ? { body } : '');
+}
+
+/**
+ * Special function for direct file downloads
+ * This bypasses JSON parsing and returns the response directly
+ */
+export async function downloadFile(url: string) {
+  try {
+    // Ensure URL is using HTTPS
+    const secureUrl = url.replace(/^http:\/\//i, 'https://');
+    
+    // Log the request for debugging
+    console.log(`Downloading file from: ${secureUrl}`);
+    
+    // For production, always use relative URLs for API requests
+    // This ensures requests go through Netlify's proxy
+    const finalUrl = isProduction 
+      ? secureUrl.replace('https://slimthicc-yt-api-latest.onrender.com', '')
+      : secureUrl;
+    
+    // Make sure URL starts with / for relative paths
+    const normalizedUrl = finalUrl.startsWith('/') || finalUrl.startsWith('http') 
+      ? finalUrl 
+      : `/${finalUrl}`;
+    
+    console.log(`Using final download URL: ${normalizedUrl}`);
+    
+    // For file downloads, we use different options
+    const fetchOptions: RequestInit = {
+      method: 'GET',
+      mode: 'cors',
+      credentials: 'same-origin',
+      headers: {
+        'X-Requested-With': 'XMLHttpRequest',
+      }
+    };
+    
+    const response = await fetch(normalizedUrl, fetchOptions);
+    
+    // Check for error response
+    if (!response.ok) {
+      // Try to parse error message if possible
+      const errorData = await response.json().catch(() => ({}));
+      throw new Error(errorData.detail || `Download failed with status ${response.status}`);
+    }
+    
+    return response;
+  } catch (error) {
+    console.error('File download failed:', error);
+    if (error instanceof Error) {
+      throw error;
+    }
+    throw new Error('An unexpected error occurred during file download');
+  }
 } 
