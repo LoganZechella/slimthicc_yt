@@ -157,12 +157,6 @@ const ExpandButton = styled.button`
   }
 `
 
-const StatusMessage = styled.div`
-  font-size: 0.875rem;
-  color: ${props => props.theme.colors.textSecondary};
-  margin-top: 0.5rem;
-`
-
 const ConnectionStatusBadge = styled.span<{ $status?: 'connecting' | 'connected' | 'disconnected' }>`
   padding: 0.25rem 0.5rem;
   border-radius: 4px;
