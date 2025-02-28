@@ -254,11 +254,14 @@ const downloadsSlice = createSlice({
     },
     taskUpdated: (state, action: PayloadAction<Partial<DownloadTask> & { id: string }>) => {
       const { id, ...updates } = action.payload
+      // Only update if the task exists to prevent React error #185
       if (state.tasks[id]) {
         state.tasks[id] = {
           ...state.tasks[id],
           ...updates
         }
+      } else {
+        console.warn(`Attempted to update non-existent task with ID: ${id}`)
       }
     },
     taskRemoved: (state, action: PayloadAction<string>) => {

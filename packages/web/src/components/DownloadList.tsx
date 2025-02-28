@@ -238,21 +238,37 @@ export const DownloadList: React.FC = () => {
   const tasks = useSelector((state: RootState) => state.downloads.tasks) as Record<string, DownloadTask>
   const [expandedTasks, setExpandedTasks] = React.useState<Record<string, boolean>>({})
   const [taskDetails, setTaskDetails] = React.useState<Record<string, TaskDetails>>({})
+  
+  // Use a ref to keep track of current tasks without triggering effect re-execution
+  const tasksRef = React.useRef(tasks);
+  
+  // Update ref whenever tasks change
+  React.useEffect(() => {
+    tasksRef.current = tasks;
+  }, [tasks]);
 
   useEffect(() => {
+    // Store active subscriptions to clean up later
+    const activeTaskIds = Object.keys(tasksRef.current);
+    console.log('Setting up WebSocket connections for tasks:', activeTaskIds);
+    
     // Subscribe to WebSocket updates for each task
-    Object.keys(tasks).forEach(taskId => {
-      const task = tasks[taskId];
+    activeTaskIds.forEach(taskId => {
+      const task = tasksRef.current[taskId];
       if (!task) return;
       
       // Create connection status callback
       const connectionStatusCallback = (status: 'connecting' | 'connected' | 'disconnected') => {
         console.log(`Connection status update for task ${taskId}: ${status}`);
-        dispatch(taskUpdated({
-          id: taskId,
-          connectionStatus: status,
-          updatedAt: new Date().toISOString()
-        }));
+        
+        // Only dispatch if component is still mounted and task exists
+        if (tasksRef.current[taskId]) {
+          dispatch(taskUpdated({
+            id: taskId,
+            connectionStatus: status,
+            updatedAt: new Date().toISOString()
+          }));
+        }
       };
       
       websocketService.subscribeToTask(taskId, (data: any) => {
@@ -262,6 +278,12 @@ export const DownloadList: React.FC = () => {
         }
         
         console.log(`Received WebSocket data for task ${taskId}:`, data);
+        
+        // First check if the task still exists in Redux store
+        if (!tasksRef.current[taskId]) {
+          console.warn(`Received WebSocket data for non-existent task with ID: ${taskId}`);
+          return;
+        }
         
         // Extract properties from data
         const { progress, status, error, details } = data;
@@ -302,11 +324,12 @@ export const DownloadList: React.FC = () => {
 
     // Cleanup subscriptions
     return () => {
-      Object.keys(tasks).forEach(taskId => {
+      console.log('Cleaning up WebSocket connections for tasks:', activeTaskIds);
+      activeTaskIds.forEach(taskId => {
         websocketService.unsubscribeFromTask(taskId);
       });
     };
-  }, [tasks, dispatch]);
+  }, [dispatch]);  // Only re-run this effect when dispatch changes, not when tasks change
 
   // Type guard for TaskStatus
   const isValidTaskStatus = (status: string): status is TaskStatus => {
@@ -348,17 +371,27 @@ export const DownloadList: React.FC = () => {
     try {
       console.log(`Attempting to reconnect WebSocket for task ${taskId}`);
       
+      // First check if the task still exists
+      if (!tasksRef.current[taskId]) {
+        console.warn(`Cannot reconnect non-existent task with ID: ${taskId}`);
+        return;
+      }
+      
       // First unsubscribe to clean up any existing connection
       websocketService.unsubscribeFromTask(taskId);
       
       // Create connection status callback
       const connectionStatusCallback = (status: 'connecting' | 'connected' | 'disconnected') => {
         console.log(`Connection status update for task ${taskId}: ${status}`);
-        dispatch(taskUpdated({
-          id: taskId,
-          connectionStatus: status,
-          updatedAt: new Date().toISOString()
-        }));
+        
+        // Only dispatch if task still exists
+        if (tasksRef.current[taskId]) {
+          dispatch(taskUpdated({
+            id: taskId,
+            connectionStatus: status,
+            updatedAt: new Date().toISOString()
+          }));
+        }
       };
       
       // Set status to connecting
@@ -376,6 +409,12 @@ export const DownloadList: React.FC = () => {
         }
         
         console.log(`Received WebSocket data for task ${taskId}:`, data);
+        
+        // First check if the task still exists in Redux store
+        if (!tasksRef.current[taskId]) {
+          console.warn(`Received WebSocket data for non-existent task with ID: ${taskId}`);
+          return;
+        }
         
         // Extract properties from data
         const { progress, status, error, details } = data;
