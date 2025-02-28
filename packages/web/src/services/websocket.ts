@@ -1,4 +1,5 @@
 // import { WS_URL } from './api';
+import { WS_URL } from './api';
 
 export class WebSocketService {
   private connections: Map<string, WebSocket> = new Map()
@@ -13,11 +14,10 @@ export class WebSocketService {
   private connectionStatusCallbacks: Map<string, Function> = new Map()
 
   constructor() {
-    // IMPORTANT: Always use direct backend WebSocket URL with WSS
-    // Netlify doesn't support WebSocket proxying properly
-    this.baseUrl = `wss://slimthicc-yt-api-latest.onrender.com/api/v1/downloads`;
+    // Use the centralized WS_URL from api.ts instead of hardcoding the URL
+    this.baseUrl = WS_URL + '/downloads';
     
-    console.log('[WebSocketService] Initialized with direct backend URL:', this.baseUrl);
+    console.log('[WebSocketService] Initialized with WebSocket URL:', this.baseUrl);
     
     // Add event listener for online/offline status
     window.addEventListener('online', this.handleOnline);
@@ -77,8 +77,7 @@ export class WebSocketService {
       return Promise.resolve()
     }
 
-    // Try multiple endpoint patterns in sequence if needed
-    // This increases resilience if the server API changes
+    // Construct the WebSocket URL for this task
     const wsUrl = `${this.baseUrl}/${taskId}/ws`;
     console.log(`[WebSocketService] Connecting to WebSocket: ${wsUrl}`)
 
@@ -104,7 +103,7 @@ export class WebSocketService {
       try {
         console.log(`[WebSocketService] Creating new WebSocket connection to ${wsUrl}`);
         
-        // Direct connection to backend WebSocket URL
+        // Create the WebSocket connection
         const ws = new WebSocket(wsUrl);
         
         // Add a timeout for the initial connection
@@ -229,6 +228,9 @@ export class WebSocketService {
             }
           }
           
+          // Clear the initial connection timeout if it exists
+          clearTimeout(connectionTimeout);
+          
           // Attempt to reconnect
           this.attemptReconnect(taskId, callback, connectionStatusCallback);
           
@@ -292,7 +294,8 @@ export class WebSocketService {
         try {
           ws.send(JSON.stringify({ 
             type: 'ping', 
-            timestamp: Date.now() 
+            timestamp: Date.now(),
+            task_id: taskId // Add task_id to ping for server identification
           }));
           console.log(`[WebSocketService] Sent ping to server for task ${taskId}`);
         } catch (error) {
@@ -300,7 +303,7 @@ export class WebSocketService {
           // If error sending ping, close and reconnect
           this.clearPingInterval(taskId);
           if (ws.readyState === WebSocket.OPEN) {
-            ws.close();
+            ws.close(1001, "Ping failure");
           }
         }
       } else {
@@ -357,7 +360,7 @@ export class WebSocketService {
     
     console.log(`[WebSocketService] Scheduling reconnect for task ${taskId} in ${delay}ms (attempt ${attempts + 1}/${this.maxReconnectAttempts})`);
     
-    // Schedule reconnect
+    // Schedule reconnect with exponential backoff
     const timeout = setTimeout(() => {
       // Only reconnect if still disconnected and callback still exists
       if (this.connectionState.get(taskId) === 'disconnected' && this.callbacks.has(taskId)) {
@@ -381,8 +384,14 @@ export class WebSocketService {
           .catch(err => {
             console.error(`[WebSocketService] Failed to reconnect WebSocket for task ${taskId}:`, err);
             
-            // If this is the last attempt, notify the callback about permanent failure
-            if (attempts + 1 >= this.maxReconnectAttempts) {
+            // Schedule another reconnect attempt if we're not at the limit
+            if (attempts + 1 < this.maxReconnectAttempts) {
+              // Manually trigger reconnect without waiting
+              setTimeout(() => {
+                this.attemptReconnect(taskId, callback, connectionStatusCallback);
+              }, 100);
+            } else {
+              // If this is the last attempt, notify the callback about permanent failure
               if (this.callbacks.has(taskId) && callback) {
                 try {
                   callback({
@@ -441,7 +450,7 @@ export class WebSocketService {
     console.log('[WebSocketService] Disconnecting all WebSockets');
     
     // Close all connections
-    this.connections.forEach((ws, _taskId) => {
+    this.connections.forEach((ws, _) => {
       if (ws && ws.readyState === WebSocket.OPEN) {
         ws.close(1000, "Client disconnected");
       }
@@ -451,14 +460,144 @@ export class WebSocketService {
     this.connections.clear();
     this.callbacks.clear();
     this.connectionStatusCallbacks.clear();
+    
+    // Clear all timeouts and intervals
+    this.reconnectTimeouts.forEach(timeout => clearTimeout(timeout));
     this.reconnectTimeouts.clear();
-    this.reconnectAttempts.clear();
+    
+    this.pingIntervals.forEach(interval => clearInterval(interval));
     this.pingIntervals.clear();
+    
+    this.reconnectAttempts.clear();
     this.connectionState.clear();
   }
 
   getConnectionState(taskId: string): 'connecting' | 'connected' | 'disconnected' {
     return this.connectionState.get(taskId) || 'disconnected';
+  }
+  
+  // Force a reconnection attempt for a specific task
+  reconnect(taskId: string): Promise<void> {
+    console.log(`[WebSocketService] Manually reconnecting WebSocket for task ${taskId}`);
+    
+    // Get the existing callback and status callback
+    const callback = this.callbacks.get(taskId);
+    const statusCallback = this.connectionStatusCallbacks.get(taskId);
+    
+    if (!callback) {
+      return Promise.reject(new Error(`No callback registered for task ${taskId}`));
+    }
+    
+    // Close existing connection if any
+    if (this.connections.has(taskId)) {
+      const ws = this.connections.get(taskId);
+      try {
+        if (ws && ws.readyState !== WebSocket.CLOSED) {
+          ws.close(1000, "Manual reconnect");
+        }
+      } catch (err) {
+        console.error(`[WebSocketService] Error closing existing connection for task ${taskId}:`, err);
+      }
+      this.connections.delete(taskId);
+    }
+    
+    // Reset reconnect attempts to give it a fresh start
+    this.reconnectAttempts.set(taskId, 0);
+    
+    // Clear any existing reconnect timeout
+    if (this.reconnectTimeouts.has(taskId)) {
+      clearTimeout(this.reconnectTimeouts.get(taskId));
+      this.reconnectTimeouts.delete(taskId);
+    }
+    
+    // Reset connection state to connecting
+    this.connectionState.set(taskId, 'connecting');
+    
+    // Notify status callback if available
+    if (statusCallback) {
+      statusCallback('connecting');
+    }
+    
+    // Resubscribe
+    return this.subscribeToTask(taskId, callback, statusCallback);
+  }
+  
+  // Diagnostic method to help debug WebSocket issues
+  async diagnoseConnection(taskId: string): Promise<Record<string, any>> {
+    console.log(`[WebSocketService] Running connection diagnostics for task ${taskId}`);
+    
+    const diagnostics: Record<string, any> = {
+      timestamp: new Date().toISOString(),
+      taskId,
+      connectionExists: this.connections.has(taskId),
+      callbackExists: this.callbacks.has(taskId),
+      connectionState: this.getConnectionState(taskId),
+      reconnectAttempts: this.reconnectAttempts.get(taskId) || 0,
+      baseUrl: this.baseUrl,
+      fullUrl: `${this.baseUrl}/${taskId}/ws`,
+      browserSupportsWebSocket: typeof WebSocket !== 'undefined',
+      networkOnline: navigator.onLine,
+    };
+    
+    // Check existing connection if any
+    if (this.connections.has(taskId)) {
+      const ws = this.connections.get(taskId);
+      diagnostics.webSocketReadyState = ws?.readyState;
+      diagnostics.webSocketReadyStateText = this.getReadyStateText(ws?.readyState);
+    }
+    
+    // Test new connection without attaching it
+    try {
+      console.log(`[WebSocketService] Testing new WebSocket connection to ${this.baseUrl}/${taskId}/ws`);
+      const testWs = new WebSocket(`${this.baseUrl}/${taskId}/ws`);
+      
+      // Set up promise to wait for open or error
+      const connectionTestResult = await new Promise<{success: boolean, details: string, error?: string}>((resolve) => {
+        // Set timeout for connection test
+        const timeout = setTimeout(() => {
+          testWs.close();
+          resolve({ success: false, details: 'Connection test timed out after 5 seconds' });
+        }, 5000);
+        
+        testWs.onopen = () => {
+          clearTimeout(timeout);
+          testWs.close(1000, 'Diagnostic test complete');
+          resolve({ success: true, details: 'New connection test successful' });
+        };
+        
+        testWs.onerror = (error) => {
+          clearTimeout(timeout);
+          resolve({ 
+            success: false, 
+            details: 'Error establishing test connection', 
+            error: String(error)
+          });
+        };
+      });
+      
+      diagnostics.connectionTestResult = connectionTestResult;
+    } catch (error) {
+      diagnostics.connectionTestResult = {
+        success: false,
+        details: 'Exception while testing connection',
+        error: String(error)
+      };
+    }
+    
+    console.log('[WebSocketService] Connection diagnostics result:', diagnostics);
+    return diagnostics;
+  }
+  
+  private getReadyStateText(readyState?: number): string {
+    if (readyState === undefined) return 'undefined';
+    
+    switch (readyState) {
+      case WebSocket.CONNECTING: return 'CONNECTING (0)';
+      case WebSocket.OPEN: return 'OPEN (1)';
+      case WebSocket.CLOSING: return 'CLOSING (2)';
+      case WebSocket.CLOSED: return 'CLOSED (3)';
+      default: return `UNKNOWN (${readyState})`;
+    }
   }
 }
 

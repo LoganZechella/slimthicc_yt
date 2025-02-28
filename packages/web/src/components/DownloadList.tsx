@@ -6,6 +6,11 @@ import { taskUpdated, DownloadTask } from '../store/downloads'
 import websocketService from '../services/websocket'
 import { ENDPOINTS, downloadFile } from '../services/api'
 
+// Valid task status checker
+function isValidTaskStatus(status: string): status is DownloadTask['status'] {
+  return ['queued', 'downloading', 'processing', 'complete', 'error'].includes(status);
+}
+
 const DownloadListContainer = styled.div`
   margin-top: 2rem;
   width: 100%;
@@ -372,11 +377,6 @@ export const DownloadList: React.FC = () => {
     };
   }, [dispatch]);
 
-  // Type guard for TaskStatus
-  const isValidTaskStatus = (status: string): status is TaskStatus => {
-    return ['queued', 'downloading', 'processing', 'complete', 'error'].includes(status);
-  };
-
   const handleDownload = async (taskId: string) => {
     try {
       console.log(`Initiating download for task ${taskId}`, tasks[taskId]);
@@ -553,10 +553,75 @@ export const DownloadList: React.FC = () => {
       
       console.log(`Reconnection attempt for task ${taskId} successful`);
     } catch (error) {
-      console.error(`Failed to reconnect WebSocket for task ${taskId}:`, error);
+      console.error(`Error reconnecting WebSocket for task ${taskId}:`, error);
+      
+      // Update Redux with connection error
       dispatch(taskUpdated({
         id: taskId,
         connectionStatus: 'disconnected',
+        error: `Failed to reconnect: ${error instanceof Error ? error.message : String(error)}`,
+        updatedAt: new Date().toISOString()
+      }));
+    }
+  };
+
+  // Function to run diagnostics on WebSocket connection
+  const handleRunDiagnostics = async (taskId: string) => {
+    try {
+      console.log(`Running WebSocket diagnostics for task ${taskId}`);
+      
+      // First check if the task still exists
+      if (!tasksRef.current[taskId]) {
+        console.warn(`Cannot diagnose non-existent task with ID: ${taskId}`);
+        return;
+      }
+      
+      // Show diagnostic status
+      dispatch(taskUpdated({
+        id: taskId,
+        error: 'Running WebSocket diagnostics...',
+        updatedAt: new Date().toISOString()
+      }));
+      
+      // Run diagnostic tests
+      const diagnostics = await websocketService.diagnoseConnection(taskId);
+      
+      // Create a readable summary
+      const summary = [
+        `Diagnostics for task ${taskId}:`,
+        `Connection exists: ${diagnostics.connectionExists}`,
+        `Connection state: ${diagnostics.connectionState}`,
+        `Network online: ${diagnostics.networkOnline}`,
+        `WebSocket state: ${diagnostics.webSocketReadyStateText || 'N/A'}`,
+        `Test connection: ${diagnostics.connectionTestResult?.success ? 'Success' : 'Failed'}`,
+        diagnostics.connectionTestResult?.details,
+        diagnostics.connectionTestResult?.error ? `Error: ${diagnostics.connectionTestResult.error}` : ''
+      ].filter(Boolean).join('\n');
+      
+      console.log(summary);
+      
+      // Update with diagnostic results
+      dispatch(taskUpdated({
+        id: taskId,
+        error: summary,
+        updatedAt: new Date().toISOString()
+      }));
+      
+      // If test connection was successful but current connection is broken,
+      // offer to reconnect automatically
+      if (diagnostics.connectionTestResult?.success && 
+          diagnostics.connectionState !== 'connected') {
+        setTimeout(() => {
+          handleReconnect(taskId);
+        }, 3000);
+      }
+    } catch (error) {
+      console.error(`Error running WebSocket diagnostics for task ${taskId}:`, error);
+      
+      // Update Redux with diagnostic error
+      dispatch(taskUpdated({
+        id: taskId,
+        error: `Diagnostic error: ${error instanceof Error ? error.message : String(error)}`,
         updatedAt: new Date().toISOString()
       }));
     }
@@ -631,6 +696,9 @@ export const DownloadList: React.FC = () => {
                 WebSocket connection lost. Real-time updates unavailable.
                 <RetryButton onClick={() => handleReconnect(task.id)}>
                   Reconnect
+                </RetryButton>
+                <RetryButton onClick={() => handleRunDiagnostics(task.id)}>
+                  Diagnose
                 </RetryButton>
               </ErrorMessage>
             )}
