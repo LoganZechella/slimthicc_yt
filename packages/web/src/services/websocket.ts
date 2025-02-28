@@ -441,8 +441,10 @@ export class WebSocketService {
     console.log('[WebSocketService] Disconnecting all WebSockets');
     
     // Close all connections
-    this.connections.forEach((_, taskId) => {
-      this.unsubscribeFromTask(taskId);
+    this.connections.forEach((ws, _taskId) => {
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.close(1000, "Client disconnected");
+      }
     });
     
     // Clear all maps
