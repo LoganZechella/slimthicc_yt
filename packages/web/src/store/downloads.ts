@@ -163,7 +163,28 @@ export const startDownload = createAsyncThunk(
               dispatch(taskUpdated({
                 id: taskId,
                 status: 'queued',
-                error: 'Lost connection to server. Reconnecting...',
+                error: 'Lost connection to server. Reconnecting automatically...',
+                updatedAt: new Date().toISOString()
+              }));
+              
+              // After disconnection, try to get a new status update after a short delay
+              // This helps recover when a connection drops but the task might still be progressing on the server
+              setTimeout(async () => {
+                try {
+                  console.log(`Requesting updated status for task ${taskId} after disconnection`);
+                  await dispatch(getTaskStatus(taskId));
+                } catch (statusError) {
+                  console.error(`Failed to get updated status for task ${taskId} after disconnection:`, statusError);
+                }
+              }, 3000); // Wait 3 seconds before trying
+            }
+          } else if (status === 'connected') {
+            // When connection is established, clear any error messages about connection issues
+            const currentTask = dispatch(getTaskStatus(taskId)) as any;
+            if (currentTask && currentTask.error && currentTask.error.includes('connection')) {
+              dispatch(taskUpdated({
+                id: taskId,
+                error: undefined, // Clear connection-related errors
                 updatedAt: new Date().toISOString()
               }));
             }

@@ -1,4 +1,4 @@
-import { WS_URL } from './api';
+// import { WS_URL } from './api';
 
 export class WebSocketService {
   private connections: Map<string, WebSocket> = new Map()
@@ -102,12 +102,28 @@ export class WebSocketService {
     // Create a new WebSocket connection
     return new Promise((resolve, reject) => {
       try {
+        console.log(`[WebSocketService] Creating new WebSocket connection to ${wsUrl}`);
+        
         // Direct connection to backend WebSocket URL
         const ws = new WebSocket(wsUrl);
         
+        // Add a timeout for the initial connection
+        const connectionTimeout = setTimeout(() => {
+          console.error(`[WebSocketService] Connection timeout for task ${taskId}`);
+          // Only reject if the connection is still pending
+          if (this.connectionState.get(taskId) === 'connecting') {
+            ws.close();
+            reject(new Error(`WebSocket connection timed out for task ${taskId}`));
+          }
+        }, 15000); // 15 second timeout for initial connection
+        
         ws.onopen = () => {
-          console.log(`[WebSocketService] WebSocket connection opened for task ${taskId}`)
-          this.connections.set(taskId, ws)
+          console.log(`[WebSocketService] WebSocket connection opened for task ${taskId}`);
+          
+          // Clear the connection timeout
+          clearTimeout(connectionTimeout);
+          
+          this.connections.set(taskId, ws);
           this.connectionState.set(taskId, 'connected');
           
           // Notify status callback
@@ -120,8 +136,8 @@ export class WebSocketService {
           
           // Clear any existing reconnect timeout
           if (this.reconnectTimeouts.has(taskId)) {
-            clearTimeout(this.reconnectTimeouts.get(taskId))
-            this.reconnectTimeouts.delete(taskId)
+            clearTimeout(this.reconnectTimeouts.get(taskId));
+            this.reconnectTimeouts.delete(taskId);
           }
           
           // Reset reconnect attempts on successful connection
@@ -130,19 +146,23 @@ export class WebSocketService {
           // Set up ping interval to keep connection alive
           this.setupPingInterval(taskId, ws);
           
-          // Send an initial "hello" message to the server to request current status
-          try {
-            ws.send(JSON.stringify({ 
-              type: 'hello', 
-              timestamp: Date.now(),
-              taskId: taskId
-            }));
-            console.log(`[WebSocketService] Sent initial hello message for task ${taskId}`);
-          } catch (error) {
-            console.error(`[WebSocketService] Error sending hello message for task ${taskId}:`, error);
-          }
+          // Wait a short time before sending hello message to ensure connection is stable
+          setTimeout(() => {
+            try {
+              // Send an initial "hello" message to the server to request current status
+              // Format expected by server: { type: "hello", task_id: "..." }
+              ws.send(JSON.stringify({ 
+                type: 'hello',
+                task_id: taskId, // Ensure we use task_id key as expected by server
+                timestamp: Date.now()
+              }));
+              console.log(`[WebSocketService] Sent initial hello message for task ${taskId}`);
+            } catch (error) {
+              console.error(`[WebSocketService] Error sending hello message for task ${taskId}:`, error);
+            }
+          }, 500); // Wait 500ms
           
-          resolve()
+          resolve();
         }
         
         ws.onmessage = (event) => {
@@ -311,6 +331,21 @@ export class WebSocketService {
     // Check if max attempts exceeded
     if (attempts >= this.maxReconnectAttempts) {
       console.log(`[WebSocketService] Max reconnect attempts (${this.maxReconnectAttempts}) reached for task ${taskId}`);
+      
+      // Notify callback about permanent disconnection
+      if (this.callbacks.has(taskId) && callback) {
+        try {
+          callback({
+            type: 'connection_error',
+            status: 'error',
+            error: `Failed to reconnect after ${this.maxReconnectAttempts} attempts.`,
+            details: { permanent: true }
+          });
+        } catch (err) {
+          console.error(`[WebSocketService] Error notifying callback about permanent disconnection:`, err);
+        }
+      }
+      
       return;
     }
     
@@ -327,8 +362,41 @@ export class WebSocketService {
       // Only reconnect if still disconnected and callback still exists
       if (this.connectionState.get(taskId) === 'disconnected' && this.callbacks.has(taskId)) {
         console.log(`[WebSocketService] Executing reconnect for task ${taskId} (attempt ${attempts + 1}/${this.maxReconnectAttempts})`);
+        
+        // Make sure we clean up any existing connection first
+        if (this.connections.has(taskId)) {
+          const oldWs = this.connections.get(taskId);
+          try {
+            if (oldWs && oldWs.readyState !== WebSocket.CLOSED) {
+              oldWs.close(1000, "Reconnecting");
+            }
+          } catch (err) {
+            console.error(`[WebSocketService] Error closing old connection for task ${taskId}:`, err);
+          }
+          this.connections.delete(taskId);
+        }
+        
+        // Now attempt to reconnect
         this.subscribeToTask(taskId, callback, connectionStatusCallback)
-          .catch(err => console.error(`[WebSocketService] Failed to reconnect WebSocket for task ${taskId}:`, err));
+          .catch(err => {
+            console.error(`[WebSocketService] Failed to reconnect WebSocket for task ${taskId}:`, err);
+            
+            // If this is the last attempt, notify the callback about permanent failure
+            if (attempts + 1 >= this.maxReconnectAttempts) {
+              if (this.callbacks.has(taskId) && callback) {
+                try {
+                  callback({
+                    type: 'connection_error',
+                    status: 'error',
+                    error: `Failed to reconnect after ${this.maxReconnectAttempts} attempts.`,
+                    details: { permanent: true }
+                  });
+                } catch (callbackErr) {
+                  console.error(`[WebSocketService] Error notifying callback about permanent disconnection:`, callbackErr);
+                }
+              }
+            }
+          });
       }
     }, delay);
     
@@ -373,7 +441,7 @@ export class WebSocketService {
     console.log('[WebSocketService] Disconnecting all WebSockets');
     
     // Close all connections
-    this.connections.forEach((ws, taskId) => {
+    this.connections.forEach((_, taskId) => {
       this.unsubscribeFromTask(taskId);
     });
     
