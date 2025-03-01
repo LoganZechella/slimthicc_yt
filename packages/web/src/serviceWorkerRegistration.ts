@@ -1,4 +1,3 @@
-import { Workbox } from 'workbox-window'
 
 const isLocalhost = Boolean(
   window.location.hostname === 'localhost' ||

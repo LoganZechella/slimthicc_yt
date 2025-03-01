@@ -23,6 +23,7 @@ export class WebSocketService {
     window.addEventListener('online', this.handleOnline);
     window.addEventListener('offline', this.handleOffline);
     window.addEventListener('beforeunload', this.cleanup);
+
   }
   
   // Check if a task is already subscribed
@@ -67,19 +68,13 @@ export class WebSocketService {
   }
 
   subscribeToTask(taskId: string, callback: Function, connectionStatusCallback?: Function): Promise<void> {
-    // If already subscribed, just update the callback
-    if (this.callbacks.has(taskId)) {
-      console.log(`[WebSocketService] Updating existing callback for task ${taskId}`)
-      this.callbacks.set(taskId, callback)
-      if (connectionStatusCallback) {
-        this.connectionStatusCallbacks.set(taskId, connectionStatusCallback);
-      }
-      return Promise.resolve()
+    console.log(`[WebSocketService] Subscribing to task ${taskId}...`);
+    
+    // If already subscribed, clean up the existing connection first
+    if (this.connections.has(taskId)) {
+      console.log(`[WebSocketService] Cleaning up existing connection for task ${taskId} before resubscribing`)
+      this.unsubscribeFromTask(taskId);
     }
-
-    // Construct the WebSocket URL for this task
-    const wsUrl = `${this.baseUrl}/${taskId}/ws`;
-    console.log(`[WebSocketService] Connecting to WebSocket: ${wsUrl}`)
 
     // Store the callbacks
     this.callbacks.set(taskId, callback)
@@ -98,13 +93,25 @@ export class WebSocketService {
     // Reset reconnect attempts
     this.reconnectAttempts.set(taskId, 0);
 
+    // Construct the WebSocket URL for this task
+    const wsUrl = `${this.baseUrl}/${taskId}/ws`;
+    console.log(`[WebSocketService] Connecting to WebSocket: ${wsUrl}`)
+
     // Create a new WebSocket connection
     return new Promise((resolve, reject) => {
       try {
         console.log(`[WebSocketService] Creating new WebSocket connection to ${wsUrl}`);
         
+        // Check if network is available
+        if (!navigator.onLine) {
+          console.warn(`[WebSocketService] Network appears offline, but attempting connection anyway`);
+        }
+        
         // Create the WebSocket connection
         const ws = new WebSocket(wsUrl);
+        
+        // Store the connection immediately to prevent race conditions
+        this.connections.set(taskId, ws);
         
         // Add a timeout for the initial connection
         const connectionTimeout = setTimeout(() => {
@@ -112,6 +119,11 @@ export class WebSocketService {
           // Only reject if the connection is still pending
           if (this.connectionState.get(taskId) === 'connecting') {
             ws.close();
+            this.connectionState.set(taskId, 'disconnected');
+            // Notify status callback
+            if (connectionStatusCallback) {
+              connectionStatusCallback('disconnected');
+            }
             reject(new Error(`WebSocket connection timed out for task ${taskId}`));
           }
         }, 15000); // 15 second timeout for initial connection
@@ -122,7 +134,6 @@ export class WebSocketService {
           // Clear the connection timeout
           clearTimeout(connectionTimeout);
           
-          this.connections.set(taskId, ws);
           this.connectionState.set(taskId, 'connected');
           
           // Notify status callback
@@ -148,14 +159,18 @@ export class WebSocketService {
           // Wait a short time before sending hello message to ensure connection is stable
           setTimeout(() => {
             try {
-              // Send an initial "hello" message to the server to request current status
-              // Format expected by server: { type: "hello", task_id: "..." }
-              ws.send(JSON.stringify({ 
-                type: 'hello',
-                task_id: taskId, // Ensure we use task_id key as expected by server
-                timestamp: Date.now()
-              }));
-              console.log(`[WebSocketService] Sent initial hello message for task ${taskId}`);
+              if (ws.readyState === WebSocket.OPEN) {
+                // Send an initial "hello" message to the server to request current status
+                // Format expected by server: { type: "hello", task_id: "..." }
+                ws.send(JSON.stringify({ 
+                  type: 'hello',
+                  task_id: taskId, // Ensure we use task_id key as expected by server
+                  timestamp: Date.now()
+                }));
+                console.log(`[WebSocketService] Sent initial hello message for task ${taskId}`);
+              } else {
+                console.warn(`[WebSocketService] Could not send hello message, WebSocket not open. State: ${ws.readyState}`);
+              }
             } catch (error) {
               console.error(`[WebSocketService] Error sending hello message for task ${taskId}:`, error);
             }
@@ -166,6 +181,20 @@ export class WebSocketService {
         
         ws.onmessage = (event) => {
           try {
+            // Check if we're still connected according to our state
+            if (this.connectionState.get(taskId) !== 'connected') {
+              console.log(`[WebSocketService] Message received but connection state is ${this.connectionState.get(taskId)}. Updating to connected.`);
+              this.connectionState.set(taskId, 'connected');
+              
+              // Notify status callback
+              if (this.connectionStatusCallbacks.has(taskId)) {
+                const statusCallback = this.connectionStatusCallbacks.get(taskId);
+                if (statusCallback) {
+                  statusCallback('connected');
+                }
+              }
+            }
+            
             const data = JSON.parse(event.data)
             
             // Handle pong messages separately
@@ -192,12 +221,16 @@ export class WebSocketService {
             // Handle ping messages from server
             if (data.type === 'ping') {
               // Send pong response
-              ws.send(JSON.stringify({ 
-                type: 'pong', 
-                timestamp: data.timestamp,
-                client_timestamp: Date.now()
-              }))
-              console.log(`[WebSocketService] Responded to server ping for task ${taskId}`)
+              if (ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({ 
+                  type: 'pong', 
+                  timestamp: data.timestamp,
+                  client_timestamp: Date.now()
+                }));
+                console.log(`[WebSocketService] Responded to server ping for task ${taskId}`);
+              } else {
+                console.warn(`[WebSocketService] Cannot respond to ping, WebSocket not open. State: ${ws.readyState}`);
+              }
               return
             }
             
@@ -243,35 +276,36 @@ export class WebSocketService {
         ws.onclose = (event) => {
           console.log(`[WebSocketService] WebSocket connection closed for task ${taskId}:`, 
             event.code, event.reason)
-          this.connectionState.set(taskId, 'disconnected');
           
-          // Notify status callback
-          if (this.connectionStatusCallbacks.has(taskId)) {
-            const statusCallback = this.connectionStatusCallbacks.get(taskId);
-            if (statusCallback) {
-              statusCallback('disconnected');
+          // Only change state if we're not already disconnected
+          if (this.connectionState.get(taskId) !== 'disconnected') {
+            this.connectionState.set(taskId, 'disconnected');
+            
+            // Notify status callback
+            if (this.connectionStatusCallbacks.has(taskId)) {
+              const statusCallback = this.connectionStatusCallbacks.get(taskId);
+              if (statusCallback) {
+                statusCallback('disconnected');
+              }
             }
-          }
-          
-          // Clear ping interval
-          this.clearPingInterval(taskId);
-          
-          // If connection was closed abnormally and we still care about this task
-          if ((event.code !== 1000 && event.code !== 1001) && this.callbacks.has(taskId)) {
-            console.log(`[WebSocketService] Attempting to reconnect WebSocket for task ${taskId}`)
             
-            // Attempt to reconnect
-            this.attemptReconnect(taskId, callback, connectionStatusCallback);
-          } else {
-            // Clean up if closed normally
-            this.connections.delete(taskId)
+            // Clear the ping interval
+            this.clearPingInterval(taskId);
             
-            // Also remove reconnect attempts counter if closed normally
-            this.reconnectAttempts.delete(taskId);
+            // Only attempt to reconnect if this wasn't an intentional close (code 1000)
+            // and we still have the callback (meaning we haven't unsubscribed)
+            if (event.code !== 1000 && this.callbacks.has(taskId)) {
+              console.log(`[WebSocketService] Attempting to reconnect for task ${taskId}`);
+              const storedCallback = this.callbacks.get(taskId);
+              const storedStatusCallback = this.connectionStatusCallbacks.get(taskId);
+              if (storedCallback) {
+                this.attemptReconnect(taskId, storedCallback, storedStatusCallback || undefined);
+              }
+            }
           }
         }
       } catch (error) {
-        console.error(`[WebSocketService] Error creating WebSocket for task ${taskId}:`, error)
+        console.error(`[WebSocketService] Error setting up WebSocket for task ${taskId}:`, error);
         this.connectionState.set(taskId, 'disconnected');
         
         // Notify status callback
@@ -279,9 +313,9 @@ export class WebSocketService {
           connectionStatusCallback('disconnected');
         }
         
-        reject(error)
+        reject(error);
       }
-    })
+    });
   }
   
   private setupPingInterval(taskId: string, ws: WebSocket) {
@@ -432,11 +466,20 @@ export class WebSocketService {
     if (this.connections.has(taskId)) {
       const ws = this.connections.get(taskId);
       try {
-        if (ws && ws.readyState === WebSocket.OPEN) {
-          ws.close(1000, "Client unsubscribed");
+        if (ws) {
+          // Force close regardless of state to ensure cleanup
+          try {
+            ws.close(1000, "Client unsubscribed");
+          } catch (closeError) {
+            console.error(`[WebSocketService] Error closing WebSocket for task ${taskId}:`, closeError);
+          }
+          
+          // Set onclose handler to null to prevent reconnection attempts during cleanup
+          ws.onclose = null;
+          ws.onerror = null;
         }
       } catch (error) {
-        console.error(`[WebSocketService] Error closing WebSocket for task ${taskId}:`, error);
+        console.error(`[WebSocketService] Error cleaning up WebSocket for task ${taskId}:`, error);
       }
       this.connections.delete(taskId);
     }
@@ -444,6 +487,8 @@ export class WebSocketService {
     // Clean up other state
     this.reconnectAttempts.delete(taskId);
     this.connectionState.delete(taskId);
+    
+    console.log(`[WebSocketService] Unsubscribed and cleaned up resources for task ${taskId}`);
   }
 
   disconnect(): void {

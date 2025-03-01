@@ -54,8 +54,20 @@ function ensureValidUrl(url: string): string {
 
 export const startDownload = createAsyncThunk(
   'downloads/startDownload',
-  async (request: { url: string; format?: DownloadFormat; quality?: AudioQuality }, { dispatch }) => {
+  async (request: { url: string; format?: DownloadFormat; quality?: AudioQuality }, { dispatch, getState }) => {
     try {
+      // Clean up existing WebSocket connections to prevent resource leaks
+      const state = getState() as { downloads: DownloadsState };
+      const existingTasks = state.downloads.tasks;
+      
+      // Unsubscribe from all completed or errored tasks
+      Object.values(existingTasks).forEach(task => {
+        if (task.status === 'complete' || task.status === 'error') {
+          console.log(`Cleaning up WebSocket connection for completed task ${task.id}`);
+          websocketService.unsubscribeFromTask(task.id);
+        }
+      });
+
       console.log('Starting download with request:', request);
       const validUrl = ensureValidUrl(request.url)
       console.log('Validated URL:', validUrl);
@@ -211,6 +223,16 @@ export const startDownload = createAsyncThunk(
           
           if (status && isValidTaskStatus(status)) {
             update.status = status;
+            
+            // Clean up WebSocket when download is completed or errored
+            if (status === 'complete' || status === 'error') {
+              console.log(`Download task ${taskId} is now ${status}, scheduling WebSocket cleanup`);
+              // Schedule cleanup after a short delay to ensure all final messages are received
+              setTimeout(() => {
+                console.log(`Performing delayed cleanup for completed task ${taskId}`);
+                websocketService.unsubscribeFromTask(taskId);
+              }, 3000); // 3 second delay
+            }
           }
           
           if (error) {
