@@ -102,7 +102,7 @@ class DownloadTask(BaseModel):
         extra = "allow"  # Allow extra fields from MongoDB
         
         # Custom JSON schema
-        schema_extra = {
+        json_schema_extra = {
             "example": {
                 "id": "123e4567-e89b-12d3-a456-426614174000",
                 "url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
