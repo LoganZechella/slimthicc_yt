@@ -199,6 +199,17 @@ export class WebSocketService {
                 console.log(`[WebSocketService] Sending hello message:`, helloMessage);
                 ws.send(JSON.stringify(helloMessage));
                 console.log(`[WebSocketService] Sent initial hello message for task ${taskId}`);
+                
+                // Set a timeout to detect if we don't get a hello_ack
+                const helloAckTimeout = setTimeout(() => {
+                  if (this.connectionState.get(taskId) === 'connected') {
+                    console.warn(`[WebSocketService] Did not receive hello_ack for task ${taskId} within timeout period`);
+                    // We can continue anyway since we're marked as connected
+                  }
+                }, 5000); // Wait 5 seconds for hello_ack
+                
+                // Store the timeout ID so we can clear it if we get a hello_ack
+                this.reconnectTimeouts.set(`hello_ack_${taskId}`, helloAckTimeout);
               } else {
                 console.warn(`[WebSocketService] Could not send hello message, WebSocket not open. State: ${ws.readyState}`);
               }
@@ -244,6 +255,20 @@ export class WebSocketService {
             if (data.type === 'pong') {
               console.log(`[WebSocketService] Received pong from server for task ${taskId}`)
               return
+            }
+            
+            // Handle hello_ack messages
+            if (data.type === 'hello_ack') {
+              console.log(`[WebSocketService] Received hello acknowledgement from server for task ${taskId}`);
+              
+              // Clear the hello ack timeout if it exists
+              const helloAckTimeoutKey = `hello_ack_${taskId}`;
+              if (this.reconnectTimeouts.has(helloAckTimeoutKey)) {
+                clearTimeout(this.reconnectTimeouts.get(helloAckTimeoutKey));
+                this.reconnectTimeouts.delete(helloAckTimeoutKey);
+              }
+              
+              return;
             }
             
             // Handle connection status messages
@@ -385,6 +410,15 @@ export class WebSocketService {
       // If no messages for heartbeatTimeout, connection may be stale
       if (timeSinceLastHeartbeat > this.heartbeatTimeout) {
         console.warn(`[WebSocketService] No heartbeat received for ${timeSinceLastHeartbeat}ms for task ${taskId}, connection may be stale`);
+        
+        // If frontend shows connected but server may have lost track, force reconnect
+        if (this.connectionState.get(taskId) === 'connected') {
+          console.log(`[WebSocketService] Frontend shows connected state but no heartbeat, attempting reconnect for task ${taskId}`);
+          this.reconnect(taskId).catch(err => {
+            console.error(`[WebSocketService] Failed to force reconnect for potentially stale connection:`, err);
+          });
+          return;
+        }
         
         // If we have a connection, check its state
         if (this.connections.has(taskId)) {
@@ -763,11 +797,19 @@ export class WebSocketService {
         : null
     };
     
+    // Add more detailed logging to help diagnose issues
+    console.log(`[WebSocketService] Connection diagnostics report:`);
+    console.log(`  - Connection state tracked by frontend: ${diagnostics.connectionState}`);
+    console.log(`  - Connection object exists: ${diagnostics.connectionExists}`);
+    console.log(`  - Time since last heartbeat: ${diagnostics.timeSinceLastHeartbeat}ms`);
+    console.log(`  - Network online: ${diagnostics.networkOnline}`);
+    
     // Check existing connection if any
     if (this.connections.has(taskId)) {
       const ws = this.connections.get(taskId);
       diagnostics.webSocketReadyState = ws?.readyState;
       diagnostics.webSocketReadyStateText = this.getReadyStateText(ws?.readyState);
+      console.log(`  - WebSocket ready state: ${diagnostics.webSocketReadyStateText}`);
     }
     
     // Test new connection without attaching it
@@ -800,15 +842,26 @@ export class WebSocketService {
       });
       
       diagnostics.connectionTestResult = connectionTestResult;
+      console.log(`  - Test connection result: ${connectionTestResult.success ? 'Success' : 'Failed'}`);
+      console.log(`  - Test details: ${connectionTestResult.details}`);
     } catch (error) {
       diagnostics.connectionTestResult = {
         success: false,
         details: 'Exception while testing connection',
         error: String(error)
       };
+      console.log(`  - Test connection result: Failed (exception)`);
+      console.log(`  - Test error: ${String(error)}`);
     }
     
-    console.log('[WebSocketService] Connection diagnostics result:', diagnostics);
+    // If tests show potential problems, log more detailed info
+    if (!diagnostics.connectionExists || 
+        (diagnostics.webSocketReadyState !== WebSocket.OPEN) || 
+        !diagnostics.connectionTestResult?.success) {
+      console.warn('[WebSocketService] Connection diagnostics detected possible issues:');
+      console.warn(JSON.stringify(diagnostics, null, 2));
+    }
+    
     return diagnostics;
   }
   

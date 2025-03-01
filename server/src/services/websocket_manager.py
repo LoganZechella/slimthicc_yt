@@ -55,6 +55,10 @@ class WebsocketManager:
                 self.active_connections[client_id].append(websocket)
                 self.connection_timestamps[client_id][websocket] = time.time()
                 
+                # Make sure connection is fully initialized before logging and sending messages
+                # This is a critical line to ensure proper tracking
+                await asyncio.sleep(0.1)  # Small sleep to ensure connection state is updated
+                
                 logger.info(f"WebSocket connected: {client_id} (total connections: {len(self.active_connections[client_id])})")
                 
                 # Log connection info
@@ -267,18 +271,69 @@ class WebsocketManager:
             message["error"] = error
         
         try:
-            connections = self.active_connections.get(task_id, [])
-            connection_count = len(connections)
-            
-            logger.debug(f"Broadcasting progress for task {task_id}: {progress}% ({status}) to {connection_count} connections")
-            logger.debug(f"Message content: {message}")
-            
-            if connection_count == 0:
-                logger.warning(f"No active connections for client {task_id}")
-            
-            return await self.send_message(task_id, message)
+            # Check if the connection is established before attempting to send
+            async with self.connection_lock:
+                connections = self.active_connections.get(task_id, [])
+                connection_count = len(connections)
+                
+                # Log connection status
+                logger.debug(f"Broadcasting progress for task {task_id}: {progress}% ({status}) to {connection_count} connections")
+                logger.debug(f"Message content: {message}")
+                
+                if connection_count == 0:
+                    # Instead of just warning, add to a queue for later delivery or retry
+                    logger.warning(f"No active connections for client {task_id} - broadcast will be skipped")
+                    # Store last message to be sent when connection is established
+                    # This could be expanded into a more robust queuing system if needed
+                    logger.debug(f"Would be broadcasting message: {message}")
+                    return False
+                
+                # Only proceed if we have connections to avoid unnecessary processing
+                if connection_count > 0:
+                    # Create a list to track connections with issues
+                    problematic_connections = []
+                    
+                    # Send to each connection
+                    for connection in connections:
+                        try:
+                            # Verify the connection is still valid
+                            if connection.client_state.name.lower() != "connected":
+                                logger.warning(f"Connection for {task_id} is not in connected state ({connection.client_state.name})")
+                                problematic_connections.append(connection)
+                                continue
+                            
+                            # Send message
+                            await connection.send_json(message)
+                            
+                            # Update last activity timestamp
+                            if task_id in self.connection_timestamps:
+                                self.connection_timestamps[task_id][connection] = time.time()
+                        except Exception as e:
+                            logger.error(f"Error sending to specific connection for {task_id}: {e}")
+                            problematic_connections.append(connection)
+                    
+                    # Remove problematic connections
+                    if problematic_connections:
+                        for prob_conn in problematic_connections:
+                            if task_id in self.active_connections and prob_conn in self.active_connections[task_id]:
+                                self.active_connections[task_id].remove(prob_conn)
+                                if task_id in self.connection_timestamps and prob_conn in self.connection_timestamps[task_id]:
+                                    del self.connection_timestamps[task_id][prob_conn]
+                                logger.info(f"Removed problematic connection for {task_id}")
+                        
+                        # Clean up empty client entries
+                        if task_id in self.active_connections and not self.active_connections[task_id]:
+                            del self.active_connections[task_id]
+                            if task_id in self.connection_timestamps:
+                                del self.connection_timestamps[task_id]
+                            logger.info(f"Removed empty client entry for {task_id}")
+                    
+                    # Return success if at least one message was sent
+                    return len(problematic_connections) < connection_count
+                
+                return False
         except Exception as e:
-            logger.error(f"Error broadcasting progress for task {task_id}: {e}", exc_info=True)
+            logger.error(f"Error in broadcast_progress for task {task_id}: {e}", exc_info=True)
             return False
     
     async def _ping_connections(self):

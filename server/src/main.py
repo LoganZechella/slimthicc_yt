@@ -160,6 +160,29 @@ async def websocket_endpoint(websocket: WebSocket, task_id: str):
                         })
                         continue
                     
+                    # Handle hello messages - explicit acknowledgment to improve connection reliability
+                    if message.get("type") == "hello":
+                        logger.info(f"Received hello message from client for task {task_id}")
+                        # Respond with connection acknowledgment
+                        await websocket.send_json({
+                            "type": "hello_ack",
+                            "task_id": task_id,
+                            "timestamp": time.time(),
+                            "message": "Hello received, connection confirmed"
+                        })
+                        
+                        # Ensure connection is marked as active in websocket_manager
+                        async with websocket_manager.connection_lock:
+                            if task_id in websocket_manager.active_connections:
+                                if websocket not in websocket_manager.active_connections[task_id]:
+                                    websocket_manager.active_connections[task_id].append(websocket)
+                                    websocket_manager.connection_timestamps[task_id][websocket] = time.time()
+                                    logger.info(f"Re-registered connection for task {task_id} after hello message")
+                        
+                        # Send current task status
+                        await _send_task_status_update(task_id, websocket)
+                        continue
+                    
                     # Handle other message types
                     message_type = message.get("type", "unknown")
                     logger.debug(f"Processing message type: {message_type} for task {task_id}")
@@ -402,6 +425,36 @@ async def root():
 @app.get("/health")
 async def health_check():
     return {"status": "healthy"}
+
+# Helper function to send task status update
+async def _send_task_status_update(task_id: str, websocket: WebSocket):
+    """Send the current task status to a specific websocket."""
+    try:
+        from src.models.task import Task
+        task = await Task.get_by_id(task_id)
+        
+        if task:
+            status_update = {
+                "status": task.status,
+                "progress": task.progress,
+                "timestamp": time.time()
+            }
+            
+            # Include details if available
+            if hasattr(task, 'details') and task.details:
+                status_update["details"] = task.details
+                
+            # Include error if there is one
+            if hasattr(task, 'error') and task.error:
+                status_update["error"] = task.error
+                
+            await websocket.send_json(status_update)
+            logger.debug(f"Sent status update for task {task_id}: {task.status}, progress: {task.progress}")
+        else:
+            logger.warning(f"Task {task_id} not found when sending status update")
+            await websocket.send_json({"error": f"Task {task_id} not found"})
+    except Exception as e:
+        logger.error(f"Error sending task status update for {task_id}: {e}", exc_info=True)
 
 if __name__ == "__main__":
     # Run the app
