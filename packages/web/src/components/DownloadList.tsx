@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react'
+import React, { useEffect, useState, useCallback } from 'react'
 import styled from 'styled-components'
 import { useSelector, useDispatch } from 'react-redux'
 import { WebSocketService } from '../services/websocket'
@@ -130,14 +130,44 @@ const DownloadButton = styled.button`
   }
 `
 
-const ConnectionStatus = styled.div<{ connected: boolean }>`
+const ConnectionStatus = styled.span<{ connected: boolean }>`
   font-size: 0.8rem;
   color: ${props => props.connected ? '#4caf50' : '#f44336'};
   margin-top: 0.25rem;
 `
 
+const ConnectionInfo = styled.div`
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-top: 0.25rem;
+`;
+
+const ReconnectButton = styled.button`
+  font-size: 0.7rem;
+  padding: 0.15rem 0.3rem;
+  background-color: #2196f3;
+  color: white;
+  border: none;
+  border-radius: 2px;
+  cursor: pointer;
+  
+  &:hover {
+    background-color: #0b7dda;
+  }
+  
+  &:disabled {
+    background-color: #cccccc;
+    cursor: not-allowed;
+  }
+`;
+
 const DownloadList: React.FC = () => {
   const [connectionStates, setConnectionStates] = useState<Record<string, 'connecting' | 'connected' | 'disconnected'>>({})
+  const [connectionDetails, setConnectionDetails] = useState<Record<string, { 
+    lastStatusUpdate: Date,
+    attemptingReconnect: boolean
+  }>>({})
   const dispatch = useDispatch()
   const tasksRecord = useSelector((state: RootState) => state.downloads.tasks)
   const tasks = Object.values(tasksRecord)
@@ -152,7 +182,7 @@ const DownloadList: React.FC = () => {
   }>>({})
   
   // Cleanup function for completed and errored tasks
-  const cleanupTask = (taskId: string, status: DownloadTaskStatus) => {
+  const cleanupTask = useCallback((taskId: string, status: DownloadTaskStatus) => {
     // If the task is completed or errored and has been connected, unsubscribe after a delay
     if (isCompletedStatus(status) && connectionStates[taskId]) {
       console.log(`[DownloadList] Task ${taskId} is ${status}, scheduling WebSocket cleanup in 5 seconds`)
@@ -166,7 +196,41 @@ const DownloadList: React.FC = () => {
         }))
       }, 5000) // Give it 5 seconds to receive final messages
     }
-  }
+  }, [connectionStates])
+
+  // Force reconnect function
+  const forceReconnect = useCallback((taskId: string) => {
+    console.log(`[DownloadList] Forcing reconnection for task ${taskId}`)
+    // Mark as attempting reconnect
+    setConnectionDetails(prev => ({
+      ...prev,
+      [taskId]: {
+        ...prev[taskId],
+        attemptingReconnect: true,
+        lastStatusUpdate: new Date()
+      }
+    }))
+    
+    // Attempt to reconnect
+    websocketService.reconnect(taskId)
+      .then(() => {
+        console.log(`[DownloadList] Reconnection successful for task ${taskId}`)
+      })
+      .catch(err => {
+        console.error(`[DownloadList] Reconnection failed for task ${taskId}:`, err)
+      })
+      .finally(() => {
+        // Clear reconnection flag
+        setConnectionDetails(prev => ({
+          ...prev,
+          [taskId]: {
+            ...prev[taskId],
+            attemptingReconnect: false,
+            lastStatusUpdate: new Date()
+          }
+        }))
+      })
+  }, [])
 
   // Subscribe to WebSocket updates for all tasks
   useEffect(() => {
@@ -178,6 +242,15 @@ const DownloadList: React.FC = () => {
       if (isAlreadySubscribed) {
         return;
       }
+      
+      // Initialize connection details
+      setConnectionDetails(prev => ({
+        ...prev,
+        [task.id]: {
+          lastStatusUpdate: new Date(),
+          attemptingReconnect: false
+        }
+      }))
       
       // Only subscribe to pending or in-progress tasks, not completed/errored ones
       if (!isCompletedStatus(task.status)) {
@@ -239,6 +312,15 @@ const DownloadList: React.FC = () => {
               ...prev,
               [task.id]: status
             }))
+            
+            // Update status timestamp
+            setConnectionDetails(prev => ({
+              ...prev,
+              [task.id]: {
+                ...prev[task.id],
+                lastStatusUpdate: new Date()
+              }
+            }))
           }
         )
       } else {
@@ -254,7 +336,7 @@ const DownloadList: React.FC = () => {
         websocketService.unsubscribeFromTask(task.id)
       })
     }
-  }, [tasks.map(task => task.id).join(',')]) // Only re-run when task IDs change
+  }, [tasks.map(task => task.id).join(','), cleanupTask]) // Only re-run when task IDs change
   
   // Format bytes to human readable format
   const formatBytes = (bytes: number, decimals = 2) => {
@@ -296,6 +378,26 @@ const DownloadList: React.FC = () => {
     setConnectionStates({})
     // Reset metadata
     setTaskMetadata({})
+    // Reset connection details
+    setConnectionDetails({})
+  }
+
+  // Get time since last update
+  const getTimeSinceLastUpdate = (taskId: string): string => {
+    const details = connectionDetails[taskId]
+    if (!details || !details.lastStatusUpdate) {
+      return 'unknown';
+    }
+    
+    const seconds = Math.floor((new Date().getTime() - details.lastStatusUpdate.getTime()) / 1000);
+    
+    if (seconds < 60) {
+      return `${seconds}s ago`;
+    } else if (seconds < 3600) {
+      return `${Math.floor(seconds / 60)}m ago`;
+    } else {
+      return `${Math.floor(seconds / 3600)}h ago`;
+    }
   }
 
   return (
@@ -321,6 +423,8 @@ const DownloadList: React.FC = () => {
       {tasks.map((task) => {
         // Get the metadata for this task
         const metadata = taskMetadata[task.id] || {};
+        const connectionStatus = connectionStates[task.id] || 'disconnected';
+        const connectionDetail = connectionDetails[task.id] || { attemptingReconnect: false, lastStatusUpdate: new Date() };
         
         return (
           <DownloadItem key={task.id} status={task.status as DownloadTaskStatus}>
@@ -333,9 +437,19 @@ const DownloadList: React.FC = () => {
             
             <TaskSubtitle>
               {metadata.description || task.url}
-              <ConnectionStatus connected={connectionStates[task.id] === 'connected'}>
-                WebSocket: {connectionStates[task.id] || 'disconnected'}
-              </ConnectionStatus>
+              <ConnectionInfo>
+                <ConnectionStatus connected={connectionStatus === 'connected'}>
+                  WebSocket: {connectionStatus} ({getTimeSinceLastUpdate(task.id)})
+                </ConnectionStatus>
+                {connectionStatus !== 'connected' && !isCompletedStatus(task.status) && (
+                  <ReconnectButton 
+                    onClick={() => forceReconnect(task.id)}
+                    disabled={connectionDetail.attemptingReconnect}
+                  >
+                    {connectionDetail.attemptingReconnect ? 'Reconnecting...' : 'Reconnect'}
+                  </ReconnectButton>
+                )}
+              </ConnectionInfo>
             </TaskSubtitle>
             
             {task.status === 'downloading' && (

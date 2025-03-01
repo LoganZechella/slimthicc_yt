@@ -6,12 +6,15 @@ export class WebSocketService {
   private callbacks: Map<string, Function> = new Map()
   private baseUrl: string
   private reconnectTimeouts: Map<string, NodeJS.Timeout> = new Map()
-  private maxReconnectAttempts = 10
+  private maxReconnectAttempts = 15 // Increase max reconnect attempts
   private reconnectAttempts: Map<string, number> = new Map()
   private pingIntervals: Map<string, NodeJS.Timeout> = new Map()
-  private pingInterval = 20000 // 20 seconds
+  private pingInterval = 10000 // 10 seconds - more frequent pings
   private connectionState: Map<string, 'connecting' | 'connected' | 'disconnected'> = new Map()
   private connectionStatusCallbacks: Map<string, Function> = new Map()
+  private lastHeartbeatReceived: Map<string, number> = new Map() // Track last heartbeat time
+  private heartbeatCheckIntervals: Map<string, NodeJS.Timeout> = new Map() // For checking heartbeat timeouts
+  private heartbeatTimeout = 25000 // Consider connection stale after 25 seconds without heartbeat
 
   constructor() {
     // Use the centralized WS_URL from api.ts instead of hardcoding the URL
@@ -23,7 +26,8 @@ export class WebSocketService {
     window.addEventListener('online', this.handleOnline);
     window.addEventListener('offline', this.handleOffline);
     window.addEventListener('beforeunload', this.cleanup);
-
+    // Also reconnect websockets when tab becomes visible
+    document.addEventListener('visibilitychange', this.handleVisibilityChange);
   }
   
   // Check if a task is already subscribed
@@ -31,12 +35,31 @@ export class WebSocketService {
     return this.callbacks.has(taskId);
   }
   
+  private handleVisibilityChange = () => {
+    if (document.visibilityState === 'visible') {
+      console.log('[WebSocketService] Tab became visible, checking connections');
+      // Check all connections and reconnect if needed
+      this.callbacks.forEach((_, taskId) => {
+        const state = this.connectionState.get(taskId);
+        if (state !== 'connected') {
+          console.log(`[WebSocketService] Tab visible: Reconnecting WebSocket for task ${taskId}`);
+          this.reconnect(taskId).catch(err => {
+            console.error(`[WebSocketService] Failed to reconnect on visibility change:`, err);
+          });
+        } else {
+          // Even if connected, send a ping to verify connection is still alive
+          this.sendPing(taskId);
+        }
+      });
+    }
+  }
+  
   private handleOnline = () => {
     console.log('[WebSocketService] Network is online, reconnecting WebSockets');
     // Reconnect all existing tasks
     this.callbacks.forEach((callback, taskId) => {
       const state = this.connectionState.get(taskId);
-      if (state === 'disconnected') {
+      if (state !== 'connected') {
         console.log(`[WebSocketService] Reconnecting WebSocket for task ${taskId} after network restored`);
         this.subscribeToTask(taskId, callback, this.connectionStatusCallbacks.get(taskId));
       }
@@ -65,6 +88,7 @@ export class WebSocketService {
     window.removeEventListener('online', this.handleOnline);
     window.removeEventListener('offline', this.handleOffline);
     window.removeEventListener('beforeunload', this.cleanup);
+    document.removeEventListener('visibilitychange', this.handleVisibilityChange);
   }
 
   subscribeToTask(taskId: string, callback: Function, connectionStatusCallback?: Function): Promise<void> {
@@ -135,6 +159,7 @@ export class WebSocketService {
           clearTimeout(connectionTimeout);
           
           this.connectionState.set(taskId, 'connected');
+          this.lastHeartbeatReceived.set(taskId, Date.now());
           
           // Notify status callback
           if (this.connectionStatusCallbacks.has(taskId)) {
@@ -156,17 +181,23 @@ export class WebSocketService {
           // Set up ping interval to keep connection alive
           this.setupPingInterval(taskId, ws);
           
+          // Set up heartbeat checker
+          this.setupHeartbeatChecker(taskId);
+          
           // Wait a short time before sending hello message to ensure connection is stable
           setTimeout(() => {
             try {
               if (ws.readyState === WebSocket.OPEN) {
                 // Send an initial "hello" message to the server to request current status
-                // Format expected by server: { type: "hello", task_id: "..." }
-                ws.send(JSON.stringify({ 
+                // Make sure the format matches what the server expects
+                const timestamp = Date.now();
+                const helloMessage = { 
                   type: 'hello',
-                  task_id: taskId, // Ensure we use task_id key as expected by server
-                  timestamp: Date.now()
-                }));
+                  task_id: taskId,  // Server expects task_id in this format
+                  timestamp
+                };
+                console.log(`[WebSocketService] Sending hello message:`, helloMessage);
+                ws.send(JSON.stringify(helloMessage));
                 console.log(`[WebSocketService] Sent initial hello message for task ${taskId}`);
               } else {
                 console.warn(`[WebSocketService] Could not send hello message, WebSocket not open. State: ${ws.readyState}`);
@@ -181,6 +212,9 @@ export class WebSocketService {
         
         ws.onmessage = (event) => {
           try {
+            // Update last heartbeat time for any message received
+            this.lastHeartbeatReceived.set(taskId, Date.now());
+            
             // Check if we're still connected according to our state
             if (this.connectionState.get(taskId) !== 'connected') {
               console.log(`[WebSocketService] Message received but connection state is ${this.connectionState.get(taskId)}. Updating to connected.`);
@@ -195,7 +229,16 @@ export class WebSocketService {
               }
             }
             
-            const data = JSON.parse(event.data)
+            // Parse message data
+            let data;
+            try {
+              data = JSON.parse(event.data);
+              console.log(`[WebSocketService] Received message type: ${data.type || 'unknown'} for task ${taskId}`);
+            } catch (parseError) {
+              console.error(`[WebSocketService] Failed to parse WebSocket message:`, event.data);
+              console.error(parseError);
+              return;
+            }
             
             // Handle pong messages separately
             if (data.type === 'pong') {
@@ -225,6 +268,7 @@ export class WebSocketService {
                 ws.send(JSON.stringify({ 
                   type: 'pong', 
                   timestamp: data.timestamp,
+                  task_id: taskId, // Add task_id to pong
                   client_timestamp: Date.now()
                 }));
                 console.log(`[WebSocketService] Responded to server ping for task ${taskId}`);
@@ -244,7 +288,7 @@ export class WebSocketService {
               }
             }
           } catch (error) {
-            console.error(`[WebSocketService] Error parsing WebSocket message for task ${taskId}:`, error)
+            console.error(`[WebSocketService] Error processing WebSocket message for task ${taskId}:`, error)
             console.log('Raw message data:', event.data)
           }
         }
@@ -263,6 +307,9 @@ export class WebSocketService {
           
           // Clear the initial connection timeout if it exists
           clearTimeout(connectionTimeout);
+          
+          // Clear heartbeat checker
+          this.clearHeartbeatChecker(taskId);
           
           // Attempt to reconnect
           this.attemptReconnect(taskId, callback, connectionStatusCallback);
@@ -292,6 +339,9 @@ export class WebSocketService {
             // Clear the ping interval
             this.clearPingInterval(taskId);
             
+            // Clear heartbeat checker
+            this.clearHeartbeatChecker(taskId);
+            
             // Only attempt to reconnect if this wasn't an intentional close (code 1000)
             // and we still have the callback (meaning we haven't unsubscribed)
             if (event.code !== 1000 && this.callbacks.has(taskId)) {
@@ -318,6 +368,88 @@ export class WebSocketService {
     });
   }
   
+  // Setup heartbeat checker to detect stale connections
+  private setupHeartbeatChecker(taskId: string) {
+    // Clear any existing interval
+    this.clearHeartbeatChecker(taskId);
+    
+    // Set current time as last heartbeat
+    this.lastHeartbeatReceived.set(taskId, Date.now());
+    
+    // Check every 15 seconds if we've received any messages (more frequent checks)
+    const intervalId = setInterval(() => {
+      const lastHeartbeat = this.lastHeartbeatReceived.get(taskId) || 0;
+      const now = Date.now();
+      const timeSinceLastHeartbeat = now - lastHeartbeat;
+      
+      // If no messages for heartbeatTimeout, connection may be stale
+      if (timeSinceLastHeartbeat > this.heartbeatTimeout) {
+        console.warn(`[WebSocketService] No heartbeat received for ${timeSinceLastHeartbeat}ms for task ${taskId}, connection may be stale`);
+        
+        // If we have a connection, check its state
+        if (this.connections.has(taskId)) {
+          const ws = this.connections.get(taskId);
+          
+          if (ws && ws.readyState === WebSocket.OPEN) {
+            // Try sending a ping to see if connection is alive
+            try {
+              this.sendPing(taskId);
+              
+              // Give it a little time to get a response
+              setTimeout(() => {
+                const newTimeSinceHeartbeat = Date.now() - (this.lastHeartbeatReceived.get(taskId) || 0);
+                
+                // If still no heartbeat after ping, force reconnect
+                if (newTimeSinceHeartbeat > this.heartbeatTimeout) {
+                  console.log(`[WebSocketService] Still no heartbeat after ping attempt, forcing reconnect for task ${taskId}`);
+                  this.reconnect(taskId).catch(err => {
+                    console.error(`[WebSocketService] Failed to force reconnect for stale connection:`, err);
+                  });
+                }
+              }, 5000); // Wait 5 seconds for ping response
+            } catch (err) {
+              console.error(`[WebSocketService] Error sending test ping:`, err);
+              // If error sending ping, force reconnect
+              this.reconnect(taskId).catch(reconnectErr => {
+                console.error(`[WebSocketService] Failed to force reconnect after ping error:`, reconnectErr);
+              });
+            }
+          } else if (ws) {
+            // Connection is in a non-open state but we still have it
+            console.log(`[WebSocketService] WebSocket is in ${this.getReadyStateText(ws.readyState)} state for task ${taskId}, forcing reconnect`);
+            this.reconnect(taskId).catch(err => {
+              console.error(`[WebSocketService] Failed to force reconnect for non-open connection:`, err);
+            });
+          }
+        } else {
+          // No connection at all
+          console.log(`[WebSocketService] No WebSocket connection found for task ${taskId}, forcing reconnect`);
+          // Only reconnect if we still have the callback (meaning we haven't unsubscribed)
+          if (this.callbacks.has(taskId)) {
+            const callback = this.callbacks.get(taskId);
+            if (callback) {
+              // Call reconnect with existing callback
+              this.reconnect(taskId).catch(err => {
+                console.error(`[WebSocketService] Failed to force reconnect for missing connection:`, err);
+              });
+            }
+          }
+        }
+      }
+    }, 15000); // Check every 15 seconds
+    
+    this.heartbeatCheckIntervals.set(taskId, intervalId);
+  }
+  
+  // Clear heartbeat checker
+  private clearHeartbeatChecker(taskId: string) {
+    if (this.heartbeatCheckIntervals.has(taskId)) {
+      clearInterval(this.heartbeatCheckIntervals.get(taskId));
+      this.heartbeatCheckIntervals.delete(taskId);
+    }
+  }
+  
+  // Setup ping interval to keep connection alive
   private setupPingInterval(taskId: string, ws: WebSocket) {
     // Clear any existing interval
     this.clearPingInterval(taskId);
@@ -349,10 +481,38 @@ export class WebSocketService {
     this.pingIntervals.set(taskId, intervalId);
   }
   
+  // Clear ping interval
   private clearPingInterval(taskId: string) {
     if (this.pingIntervals.has(taskId)) {
       clearInterval(this.pingIntervals.get(taskId));
       this.pingIntervals.delete(taskId);
+    }
+  }
+
+  // Send a ping message to the server
+  private sendPing(taskId: string): boolean {
+    if (!this.connections.has(taskId)) {
+      console.warn(`[WebSocketService] Cannot send ping, no connection for task ${taskId}`);
+      return false;
+    }
+    
+    const ws = this.connections.get(taskId);
+    if (!ws || ws.readyState !== WebSocket.OPEN) {
+      console.warn(`[WebSocketService] Cannot send ping, WebSocket not open for task ${taskId}. State: ${ws ? this.getReadyStateText(ws.readyState) : 'undefined'}`);
+      return false;
+    }
+    
+    try {
+      ws.send(JSON.stringify({ 
+        type: 'ping', 
+        timestamp: Date.now(),
+        task_id: taskId // Include task_id in ping
+      }));
+      console.log(`[WebSocketService] Sent manual ping to server for task ${taskId}`);
+      return true;
+    } catch (error) {
+      console.error(`[WebSocketService] Error sending manual ping for task ${taskId}:`, error);
+      return false;
     }
   }
   
@@ -462,6 +622,9 @@ export class WebSocketService {
     // Clear ping interval if any
     this.clearPingInterval(taskId);
     
+    // Clear heartbeat checker
+    this.clearHeartbeatChecker(taskId);
+    
     // Close and remove connection
     if (this.connections.has(taskId)) {
       const ws = this.connections.get(taskId);
@@ -487,6 +650,7 @@ export class WebSocketService {
     // Clean up other state
     this.reconnectAttempts.delete(taskId);
     this.connectionState.delete(taskId);
+    this.lastHeartbeatReceived.delete(taskId);
     
     console.log(`[WebSocketService] Unsubscribed and cleaned up resources for task ${taskId}`);
   }
@@ -513,8 +677,12 @@ export class WebSocketService {
     this.pingIntervals.forEach(interval => clearInterval(interval));
     this.pingIntervals.clear();
     
+    this.heartbeatCheckIntervals.forEach(interval => clearInterval(interval));
+    this.heartbeatCheckIntervals.clear();
+    
     this.reconnectAttempts.clear();
     this.connectionState.clear();
+    this.lastHeartbeatReceived.clear();
   }
 
   getConnectionState(taskId: string): 'connecting' | 'connected' | 'disconnected' {
@@ -538,6 +706,7 @@ export class WebSocketService {
       const ws = this.connections.get(taskId);
       try {
         if (ws && ws.readyState !== WebSocket.CLOSED) {
+          // Use code 1000 (Normal Closure) and reason for normal close
           ws.close(1000, "Manual reconnect");
         }
       } catch (err) {
@@ -546,7 +715,13 @@ export class WebSocketService {
       this.connections.delete(taskId);
     }
     
-    // Reset reconnect attempts to give it a fresh start
+    // Clear any existing ping interval
+    this.clearPingInterval(taskId);
+    
+    // Clear heartbeat checker
+    this.clearHeartbeatChecker(taskId);
+    
+    // Reset reconnect attempts for manual reconnect
     this.reconnectAttempts.set(taskId, 0);
     
     // Clear any existing reconnect timeout
@@ -582,6 +757,10 @@ export class WebSocketService {
       fullUrl: `${this.baseUrl}/${taskId}/ws`,
       browserSupportsWebSocket: typeof WebSocket !== 'undefined',
       networkOnline: navigator.onLine,
+      lastHeartbeatReceived: this.lastHeartbeatReceived.get(taskId),
+      timeSinceLastHeartbeat: this.lastHeartbeatReceived.get(taskId) 
+        ? Date.now() - this.lastHeartbeatReceived.get(taskId)! 
+        : null
     };
     
     // Check existing connection if any
@@ -646,6 +825,4 @@ export class WebSocketService {
   }
 }
 
-// Create singleton instance
-const websocketService = new WebSocketService();
-export default websocketService; 
+export default new WebSocketService(); 
