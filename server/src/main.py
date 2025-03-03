@@ -309,8 +309,8 @@ async def websocket_endpoint(websocket: WebSocket, task_id: str):
                     logger.debug(f"Processing message type: {message_type} for task {task_id}")
                     
                     # Get task status and send update
-                    from src.models.task import Task
-                    task = await Task.get_by_id(task_id)
+                    from services.download_task_manager import download_task_manager
+                    task = await download_task_manager.get_task(task_id)
                     
                     if task:
                         status_update = {
@@ -436,7 +436,7 @@ async def global_fallback_websocket_endpoint(websocket: WebSocket, path: str):
             
         logger.info(f"Fallback WebSocket connection accepted for task {task_id}")
         
-        from src.services.download_task_manager import download_task_manager
+        from services.download_task_manager import download_task_manager
         
         # Send initial status
         task = await download_task_manager.get_task(task_id)
@@ -576,8 +576,8 @@ async def root_health_check():
 async def _send_task_status_update(task_id: str, websocket: WebSocket):
     """Send the current task status to a specific websocket."""
     try:
-        from src.models.task import Task
-        task = await Task.get_by_id(task_id)
+        from services.download_task_manager import download_task_manager
+        task = await download_task_manager.get_task(task_id)
         
         if task:
             status_update = {
