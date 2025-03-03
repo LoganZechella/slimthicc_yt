@@ -12,15 +12,32 @@ try:
     for i in range(5):
         current_path = Path(__file__).resolve()
         for _ in range(i):
-            current_path = current_path.parent
-        print(f"Level {i} ({current_path}): {[p.name for p in current_path.iterdir() if p.exists()]}")
+            if current_path.exists():
+                current_path = current_path.parent
+        
+        # Only try to list directory contents if it's a directory
+        if current_path.is_dir():
+            print(f"Level {i} ({current_path}): {[p.name for p in current_path.iterdir() if p.exists()]}")
+        else:
+            print(f"Level {i} ({current_path}): Not a directory")
 except Exception as e:
     print(f"Error mapping directories: {e}")
 
 print(f"Downloads router path: {Path(__file__).parent / 'downloads' / 'router.py'}")
 print(f"Downloads router exists: {(Path(__file__).parent / 'downloads' / 'router.py').exists()}")
-print(f"Parent contents: {list((Path(__file__).parent).iterdir())}")
-print(f"Downloads folder contents: {list((Path(__file__).parent / 'downloads').iterdir()) if (Path(__file__).parent / 'downloads').exists() else 'Dir not found'}")
+
+# Only list directory contents if the directory exists
+if Path(__file__).parent.exists() and Path(__file__).parent.is_dir():
+    print(f"Parent contents: {list((Path(__file__).parent).iterdir())}")
+else:
+    print(f"Parent path {Path(__file__).parent} is not a valid directory")
+
+# Check if downloads directory exists before trying to list its contents
+downloads_dir = Path(__file__).parent / 'downloads'
+if downloads_dir.exists() and downloads_dir.is_dir():
+    print(f"Downloads folder contents: {list(downloads_dir.iterdir())}")
+else:
+    print(f"Downloads folder not found or not a directory: {downloads_dir}")
 
 # Try with direct import using importlib
 import importlib.util

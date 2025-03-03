@@ -12,34 +12,59 @@ print("Directory structure analysis:")
 try:
     current_dir = Path(os.getcwd())
     print(f"Current directory: {current_dir}")
-    print(f"Contents: {[f.name for f in current_dir.iterdir() if f.exists()]}")
+    
+    # Safely list directory contents
+    if current_dir.is_dir():
+        print(f"Contents: {[f.name for f in current_dir.iterdir() if f.exists()]}")
+    else:
+        print("Current path is not a directory")
     
     # Check for server directory (might be in different locations)
     server_dir = None
     
-    # Option 1: We're already in the server directory
-    if (current_dir / "src").exists():
-        server_dir = current_dir
-        print(f"Detected server directory at current location: {server_dir}")
+    # Try to locate the main project directory
+    possible_project_dirs = [
+        Path(os.getcwd()),                   # Current directory
+        Path("/opt/render/project"),         # Root Render project dir
+        Path("/opt/render/project/src"),     # Possible subdirectory on Render
+        Path("/opt/render/project/server"),  # Another possible subdirectory
+    ]
     
-    # Option 2: We're in a parent directory of server
-    elif (current_dir / "server").exists():
-        server_dir = current_dir / "server"
-        print(f"Detected server directory at: {server_dir}")
-    
-    # Option 3: We're in some Render-specific directory structure
-    elif Path("/opt/render/project/server").exists():
-        server_dir = Path("/opt/render/project/server")
-        print(f"Detected server directory at Render location: {server_dir}")
-    
-    # If we found the server directory, add it and its src directory to path
+    # Try each possible project directory
+    for project_dir in possible_project_dirs:
+        print(f"Checking potential project directory: {project_dir}")
+        if not project_dir.exists():
+            print(f"  Directory doesn't exist")
+            continue
+            
+        if not project_dir.is_dir():
+            print(f"  Not a directory")
+            continue
+            
+        # List contents to help with debugging
+        try:
+            contents = [f.name for f in project_dir.iterdir() if f.exists()]
+            print(f"  Contents: {contents}")
+        except Exception as e:
+            print(f"  Error listing contents: {e}")
+            continue
+
+        # Check if this could be the server directory
+        if (project_dir / "src").exists() and (project_dir / "src").is_dir():
+            server_dir = project_dir
+            print(f"✓ Found server directory: {server_dir}")
+            break
+            
+    # After checking all options, set up Python path
     if server_dir:
-        if server_dir not in sys.path:
+        # Make sure the server dir is in the path
+        if str(server_dir) not in sys.path:
             sys.path.insert(0, str(server_dir))
             print(f"Added server directory to path: {server_dir}")
         
+        # Also add the src directory
         src_dir = server_dir / "src"
-        if src_dir.exists() and src_dir not in sys.path:
+        if src_dir.exists() and src_dir.is_dir() and str(src_dir) not in sys.path:
             sys.path.insert(0, str(src_dir))
             print(f"Added src directory to path: {src_dir}")
     else:

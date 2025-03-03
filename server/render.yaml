@@ -5,7 +5,7 @@ services:
     buildCommand: cd server && pip install -r requirements.txt && bash setup.sh
     startCommand: >
       cd server && 
-      PYTHONPATH=/opt/render/project/server 
+      PYTHONPATH=/opt/render/project 
       PATH="$HOME/.ffmpeg-downloader/bin:$PATH" 
       gunicorn -k uvicorn.workers.UvicornWorker src.main:app --bind 0.0.0.0:$PORT
     envVars:

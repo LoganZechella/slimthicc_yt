@@ -6,33 +6,49 @@ from pathlib import Path
 # Get the server directory path - handle multiple possible structures
 print(f"Initial working directory: {os.getcwd()}")
 
-# Determine the server directory based on context
+# Helper function to safely check directory contents
+def safe_list_dir(path):
+    try:
+        if path.exists() and path.is_dir():
+            return [p.name for p in path.iterdir()]
+        else:
+            return f"Not a valid directory: {path}"
+    except Exception as e:
+        return f"Error listing directory {path}: {e}"
+
+# Try all possible project root locations
+possible_roots = [
+    Path(os.getcwd()),                  # Current directory
+    Path(os.getcwd()).parent,           # Parent of current directory
+    Path("/opt/render/project"),        # Root Render directory
+    Path("/opt/render/project/src"),    # Potential alternate structure 
+    Path("/opt/render/project/server"), # Another potential structure
+]
+
+print("Analyzing possible project roots:")
 server_dir = None
-
-# Option 1: We're already in the server directory
-if Path("src").exists() and Path("requirements.txt").exists():
-    server_dir = Path(os.getcwd())
-    print(f"We are in the server directory: {server_dir}")
-
-# Option 2: We're in a parent directory containing a server directory
-elif Path("server").exists() and Path("server/src").exists():
-    server_dir = Path(os.getcwd()) / "server"
-    print(f"Server directory found at: {server_dir}")
-
-# Option 3: We're in the Render environment
-elif Path("/opt/render/project").exists():
-    # Try to locate the server directory within the Render project
-    for potential_path in [
-        Path("/opt/render/project/server"),
-        Path("/opt/render/project")
-    ]:
-        if (potential_path / "src").exists():
-            server_dir = potential_path
-            print(f"Found server directory in Render environment: {server_dir}")
+for root in possible_roots:
+    print(f"Checking {root}:")
+    print(f"  Exists: {root.exists()}")
+    print(f"  Is directory: {root.is_dir() if root.exists() else 'N/A'}")
+    print(f"  Contents: {safe_list_dir(root)}")
+    
+    # Check if this directory has src subdirectory or seems to be the server dir
+    if root.exists() and root.is_dir():
+        # Check if this is the server directory (has src folder)
+        if (root / "src").exists() and (root / "src").is_dir():
+            server_dir = root
+            print(f"✓ Found server directory at {server_dir}")
+            break
+            
+        # Check if this is a parent directory with server subdirectory
+        if (root / "server").exists() and (root / "server" / "src").exists():
+            server_dir = root / "server"
+            print(f"✓ Found server directory at {server_dir}")
             break
 
 if not server_dir:
-    print("WARNING: Could not determine server directory")
+    print("WARNING: Could not determine server directory, using script location as fallback")
     SERVER_DIR = Path(__file__).resolve().parent
     ROOT_DIR = SERVER_DIR.parent
 else:
@@ -40,10 +56,10 @@ else:
     ROOT_DIR = SERVER_DIR.parent
 
 # Print directory structure for debugging
-print(f"Server directory: {SERVER_DIR}")
+print(f"Selected server directory: {SERVER_DIR}")
 print(f"Root directory: {ROOT_DIR}")
 print(f"Server directory exists: {SERVER_DIR.exists()}")
-print(f"Server directory contents: {[f.name for f in SERVER_DIR.iterdir() if f.exists()]}")
+print(f"Server directory contents: {safe_list_dir(SERVER_DIR)}")
 
 # Add both server and root directories to Python path
 if str(SERVER_DIR) not in sys.path:
@@ -53,7 +69,7 @@ if str(ROOT_DIR) not in sys.path:
 
 # Also add the src directory explicitly
 src_dir = SERVER_DIR / "src"
-if src_dir.exists() and str(src_dir) not in sys.path:
+if src_dir.exists() and src_dir.is_dir() and str(src_dir) not in sys.path:
     sys.path.insert(0, str(src_dir))
     print(f"Added src directory to path: {src_dir}")
 
