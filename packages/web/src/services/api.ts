@@ -6,13 +6,11 @@
 // Determine if we should use absolute URLs or relative URLs
 // In production on Netlify, we want to use relative URLs to leverage the proxy
 const isProduction = import.meta.env.PROD;
-// FIX: Change to always use absolute URLs since Netlify proxy isn't working
-const shouldUseRelativeUrls = false; // Changed from isProduction
+// Always use absolute URLs since Netlify proxy isn't working
+const shouldUseRelativeUrls = false;
 
-// Use environment variables for API URLs, but in production use relative URLs
-const API_BASE_URL = shouldUseRelativeUrls 
-  ? '' // Empty string for relative URLs in production
-  : (import.meta.env.VITE_API_URL || 'https://slimthicc-yt-api-latest.onrender.com');
+// Use environment variables for API URLs
+const API_BASE_URL = 'https://slimthicc-yt-api-latest.onrender.com';
 
 // Ensure API_BASE_URL always uses HTTPS if it's an absolute URL
 const secureApiBaseUrl = API_BASE_URL 
@@ -29,6 +27,7 @@ export const ENDPOINTS = {
   DOWNLOADS: `${API_URL}/downloads`,
   DOWNLOAD: (taskId: string) => `${API_URL}/downloads/${taskId}`,
   DOWNLOAD_FILE: (taskId: string) => `${API_URL}/downloads/${taskId}/file`,
+  CORS_TEST: `${API_URL}/cors-test`,
 };
 
 // WebSocket URL - IMPORTANT: always use absolute URL for WebSockets
@@ -54,17 +53,10 @@ export async function makeRequest(url: string, options: RequestInit = {}) {
     // Log the request for debugging
     console.log(`Making API request to: ${secureUrl}`);
     
-    // FIX: Modified to always use absolute URLs
-    const finalUrl = shouldUseRelativeUrls 
-      ? secureUrl.replace('https://slimthicc-yt-api-latest.onrender.com', '')
-      : secureUrl;
+    // Always use absolute URLs since the Netlify proxy isn't working
+    const finalUrl = secureUrl;
     
-    // Make sure URL starts with / for relative paths
-    const normalizedUrl = finalUrl.startsWith('/') || finalUrl.startsWith('http') 
-      ? finalUrl 
-      : `/${finalUrl}`;
-    
-    console.log(`Using final URL: ${normalizedUrl}`);
+    console.log(`Using final URL: ${finalUrl}`);
     
     // Set up request options with MODE=cors explicitly to help with CORS
     const fetchOptions: RequestInit = {
@@ -88,7 +80,7 @@ export async function makeRequest(url: string, options: RequestInit = {}) {
     
     // Use Promise.race to implement timeout
     const response = await Promise.race([
-      fetch(normalizedUrl, fetchOptions),
+      fetch(finalUrl, fetchOptions),
       timeoutPromise
     ]) as Response;
 
@@ -234,5 +226,45 @@ export async function downloadFile(url: string) {
       throw error;
     }
     throw new Error('An unexpected error occurred during file download');
+  }
+}
+
+/**
+ * Test CORS configuration
+ * This function tests if CORS is properly configured between frontend and backend
+ */
+export async function testCORS() {
+  try {
+    console.log(`Testing CORS with endpoint: ${ENDPOINTS.CORS_TEST}`);
+    const response = await fetch(ENDPOINTS.CORS_TEST, {
+      method: 'GET',
+      mode: 'cors',
+      headers: {
+        'Content-Type': 'application/json',
+        'Accept': 'application/json'
+      }
+    });
+    
+    if (!response.ok) {
+      console.error(`CORS test failed with status: ${response.status}`);
+      return {
+        success: false,
+        status: response.status,
+        message: `Failed with status ${response.status}`
+      };
+    }
+    
+    const data = await response.json();
+    console.log(`CORS test successful:`, data);
+    return {
+      success: true,
+      ...data
+    };
+  } catch (error) {
+    console.error(`CORS test failed with error:`, error);
+    return {
+      success: false,
+      error: String(error)
+    };
   }
 } 

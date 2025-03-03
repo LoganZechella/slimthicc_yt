@@ -160,75 +160,43 @@ app = FastAPI(
 # Log CORS settings
 logger.info(f"Configuring CORS with origins: {settings.CORS_ORIGINS}")
 
-# Always allow all origins for WebSocket connections
-# WebSocket connections must come directly from the browser to the server
-logger.warning("WebSocket connections require direct access - allowing all origins")
-# FIX: Explicitly include the Netlify domain and use wildcard properly
-cors_origins = ["*", "https://slimthicc-commandcenter.netlify.app"]
-settings.CORS_ALLOW_ALL = True
+# Create a list of allowed origins that is guaranteed to include the Netlify domain
+netlify_domain = "https://slimthicc-commandcenter.netlify.app"
+allowed_origins = ["*", netlify_domain, "http://localhost:5173", "http://localhost:3000"]
+logger.warning(f"Setting up CORS with these origins: {allowed_origins}")
 
 # Set up CORS middleware with improved handling of preflight requests
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=cors_origins,
+    allow_origins=allowed_origins,
     allow_credentials=True,
-    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"],
+    allow_methods=["*"],
     allow_headers=["*"],
     max_age=86400,  # Cache preflight request results for 24 hours (in seconds)
+    expose_headers=["*"]
 )
 
-# Custom middleware for debugging CORS requests
+# Also add a raw middleware for handling CORS as a fallback
 @app.middleware("http")
-async def cors_debug_middleware(request: Request, call_next):
-    # Log all OPTIONS requests for debugging
-    if request.method == "OPTIONS":
-        logger.info(f"Received OPTIONS preflight request from {request.client.host} to {request.url.path}")
-        logger.debug(f"Request headers: {dict(request.headers)}")
+async def cors_middleware(request: Request, call_next):
+    # Process the request
+    response = await call_next(request)
     
-    # Debug WebSocket connection attempts
-    if request.url.path.endswith('/ws') or 'websocket' in request.headers.get('upgrade', '').lower():
-        logger.info(f"WebSocket connection attempt detected: {request.url.path} from {request.client.host}")
-        logger.debug(f"Request headers: {dict(request.headers)}")
-
-    # Process the request and get the response
-    try:
-        response = await call_next(request)
-        
-        # Add CORS headers to every response
-        if request.method == "OPTIONS":
-            # Log the response headers for debugging
-            logger.info(f"Responding to OPTIONS request with headers: {dict(response.headers)}")
-            
-            # FIX: Ensure OPTIONS requests get CORS headers even if they don't match routes
-            if "access-control-allow-origin" not in response.headers:
-                netlify_domain = "https://slimthicc-commandcenter.netlify.app"
-                origin = request.headers.get("origin")
-                
-                # If the origin matches our Netlify domain, explicitly add it
-                if origin == netlify_domain:
-                    response.headers["access-control-allow-origin"] = netlify_domain
-                    response.headers["access-control-allow-methods"] = "GET, POST, PUT, DELETE, OPTIONS, PATCH"
-                    response.headers["access-control-allow-headers"] = "*"
-                    response.headers["access-control-max-age"] = "86400"
-                # Otherwise, use wildcard if allow_all is enabled
-                elif settings.CORS_ALLOW_ALL:
-                    response.headers["access-control-allow-origin"] = "*"
-                    response.headers["access-control-allow-methods"] = "GET, POST, PUT, DELETE, OPTIONS, PATCH"
-                    response.headers["access-control-allow-headers"] = "*"
-                    response.headers["access-control-max-age"] = "86400"
-        
-        # Log 404 responses for debugging
-        if response.status_code == 404:
-            logger.warning(f"404 Not Found: {request.method} {request.url.path}")
-            
-        return response
-    except Exception as e:
-        logger.error(f"Unhandled exception in middleware: {str(e)}")
-        logger.error(traceback.format_exc())
-        return JSONResponse(
-            status_code=500,
-            content={"detail": "Internal server error"}
+    # Add CORS headers to all responses
+    response.headers["Access-Control-Allow-Origin"] = netlify_domain
+    response.headers["Access-Control-Allow-Credentials"] = "true"
+    response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, OPTIONS, PATCH"
+    response.headers["Access-Control-Allow-Headers"] = "*"
+    response.headers["Access-Control-Max-Age"] = "86400"
+    
+    # If it's an OPTIONS request, return a 200 response immediately
+    if request.method == "OPTIONS":
+        return Response(
+            status_code=200,
+            headers=response.headers
         )
+    
+    return response
 
 # Global error handler for all routes
 @app.exception_handler(Exception)
@@ -620,6 +588,29 @@ async def _send_task_status_update(task_id: str, websocket: WebSocket):
             await websocket.send_json({"error": f"Task {task_id} not found"})
     except Exception as e:
         logger.error(f"Error sending task status update for {task_id}: {e}", exc_info=True)
+
+@app.options("/api/v1/cors-test")
+async def cors_test_preflight():
+    """
+    OPTIONS endpoint that explicitly tests CORS preflight requests.
+    This route handles the OPTIONS preflight request for CORS testing.
+    """
+    logger.info("Received OPTIONS request to /api/v1/cors-test")
+    return {}
+
+@app.get("/api/v1/cors-test")
+async def cors_test():
+    """
+    Simple endpoint to test if CORS is working correctly.
+    Frontend can call this endpoint to verify CORS headers are being set properly.
+    """
+    logger.info("Received GET request to /api/v1/cors-test")
+    return {
+        "status": "success",
+        "message": "CORS is configured correctly!",
+        "cors_origins": allowed_origins,
+        "netlify_domain": netlify_domain
+    }
 
 if __name__ == "__main__":
     # Run the app
