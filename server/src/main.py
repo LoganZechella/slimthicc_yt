@@ -5,13 +5,66 @@ from pathlib import Path
 
 # Print debug information about the current environment
 print(f"Current working directory: {os.getcwd()}")
-print(f"Python path: {sys.path}")
+print(f"Python path (before): {sys.path}")
 
-# Add the parent directory to the Python path to resolve "src" imports
-SERVER_DIR = Path(__file__).resolve().parent.parent
-if SERVER_DIR not in sys.path:
-    sys.path.append(str(SERVER_DIR))
-    print(f"Added {SERVER_DIR} to Python path")
+# Map the directory structure
+print("Directory structure analysis:")
+try:
+    current_dir = Path(os.getcwd())
+    print(f"Current directory: {current_dir}")
+    print(f"Contents: {[f.name for f in current_dir.iterdir() if f.exists()]}")
+    
+    # Check for server directory (might be in different locations)
+    server_dir = None
+    
+    # Option 1: We're already in the server directory
+    if (current_dir / "src").exists():
+        server_dir = current_dir
+        print(f"Detected server directory at current location: {server_dir}")
+    
+    # Option 2: We're in a parent directory of server
+    elif (current_dir / "server").exists():
+        server_dir = current_dir / "server"
+        print(f"Detected server directory at: {server_dir}")
+    
+    # Option 3: We're in some Render-specific directory structure
+    elif Path("/opt/render/project/server").exists():
+        server_dir = Path("/opt/render/project/server")
+        print(f"Detected server directory at Render location: {server_dir}")
+    
+    # If we found the server directory, add it and its src directory to path
+    if server_dir:
+        if server_dir not in sys.path:
+            sys.path.insert(0, str(server_dir))
+            print(f"Added server directory to path: {server_dir}")
+        
+        src_dir = server_dir / "src"
+        if src_dir.exists() and src_dir not in sys.path:
+            sys.path.insert(0, str(src_dir))
+            print(f"Added src directory to path: {src_dir}")
+    else:
+        print("WARNING: Could not locate server directory!")
+except Exception as e:
+    print(f"Error analyzing directory structure: {e}")
+
+# Check for ffmpeg binary location
+ffmpeg_binary_path = Path(os.path.expanduser("~/.ffmpeg-downloader/bin/ffmpeg"))
+if ffmpeg_binary_path.exists():
+    print(f"Found ffmpeg binary at: {ffmpeg_binary_path}")
+    # Add to PATH
+    os.environ["PATH"] = f"{ffmpeg_binary_path.parent}:{os.environ.get('PATH', '')}"
+    print(f"Updated PATH with ffmpeg binary directory: {ffmpeg_binary_path.parent}")
+else:
+    print(f"ffmpeg binary not found at expected location: {ffmpeg_binary_path}")
+    # Try to find ffmpeg in PATH
+    import subprocess
+    try:
+        ffmpeg_path = subprocess.check_output(["which", "ffmpeg"]).decode().strip()
+        print(f"Found ffmpeg in PATH at: {ffmpeg_path}")
+    except subprocess.CalledProcessError:
+        print("ffmpeg not found in PATH")
+
+print(f"Python path (after): {sys.path}")
 
 try:
     # First try local/relative imports
@@ -22,12 +75,30 @@ try:
     print("Using relative imports")
 except ImportError as e:
     print(f"Relative import failed: {e}")
-    # Fall back to absolute imports
-    from src.config.settings import settings
-    from src.config.database import connect_to_mongo, close_mongo_connection
-    from src.api.v1.router import router as api_router
-    from src.services.websocket_manager import websocket_manager
-    print("Using absolute imports")
+    try:
+        # Try absolute imports from src
+        from src.config.settings import settings
+        from src.config.database import connect_to_mongo, close_mongo_connection
+        from src.api.v1.router import router as api_router
+        from src.services.websocket_manager import websocket_manager
+        print("Using absolute imports with src prefix")
+    except ImportError as e2:
+        print(f"Absolute import with src prefix failed: {e2}")
+        # Last resort - try to find the modules anywhere in the path
+        print("Attempting to locate modules in sys.path...")
+        
+        for path_entry in sys.path:
+            print(f"Checking {path_entry}...")
+            api_dir = Path(path_entry) / "api" / "v1"
+            if api_dir.exists():
+                print(f"Found API directory at: {api_dir}")
+            
+            config_dir = Path(path_entry) / "config"
+            if config_dir.exists():
+                print(f"Found config directory at: {config_dir}")
+        
+        # Raise the original exception if we can't resolve imports
+        raise ImportError("Failed to import required modules") from e
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
@@ -427,6 +498,21 @@ async def startup_db_client():
     logger.info("Application starting with configuration:")
     logger.info(f"API base URL: {settings.API_V1_STR}")
     logger.info(f"CORS origins: {settings.CORS_ORIGINS}")
+    
+    # Configure ffmpeg wrapper with binary path if available
+    ffmpeg_binary_path = Path(os.path.expanduser("~/.ffmpeg-downloader/bin/ffmpeg"))
+    if ffmpeg_binary_path.exists():
+        logger.info(f"Using ffmpeg binary at: {ffmpeg_binary_path}")
+        os.environ["FFMPEG_BINARY"] = str(ffmpeg_binary_path)
+    else:
+        # Try to find ffmpeg in PATH
+        import subprocess
+        try:
+            ffmpeg_path = subprocess.check_output(["which", "ffmpeg"]).decode().strip()
+            logger.info(f"Using ffmpeg from PATH at: {ffmpeg_path}")
+            os.environ["FFMPEG_BINARY"] = ffmpeg_path
+        except subprocess.CalledProcessError:
+            logger.warning("ffmpeg not found in PATH, some functionality might be limited")
     
     # Log Spotify credential presence
     spotify_client_id = settings.SPOTIFY_CLIENT_ID or os.getenv("SPOTIPY_CLIENT_ID")

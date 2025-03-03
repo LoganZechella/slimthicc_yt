@@ -16,19 +16,13 @@ chmod 755 tmp
 touch youtube.cookies
 chmod 600 youtube.cookies
 
-# Install system dependencies (for Render deployment)
-if [ -f /etc/debian_version ]; then
-    echo "Installing ffmpeg on Debian/Ubuntu..."
-    apt-get update
-    apt-get install -y ffmpeg
-elif command -v yum > /dev/null; then
-    echo "Installing ffmpeg on CentOS/RHEL..."
-    yum install -y ffmpeg
-elif command -v brew > /dev/null; then
-    echo "Installing ffmpeg with Homebrew (macOS)..."
-    brew install ffmpeg
-else
-    echo "WARNING: Could not install ffmpeg automatically. Please install it manually."
-fi
+# Add ffmpeg-downloader to ensure binary is available
+pip install ffmpeg-downloader
+python -m ffmpeg_downloader.entry_point
+
+# Export binary path to environment
+export PATH="$HOME/.ffmpeg-downloader/bin:$PATH"
+echo "PATH updated to include ffmpeg binaries: $PATH"
+echo "ffmpeg location: $(which ffmpeg || echo 'Not found')"
 
 echo "Setup complete. Environment initialized with proper permissions." 
