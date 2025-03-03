@@ -8,6 +8,7 @@ build/
 develop-eggs/
 dist/
 downloads/
+!server/src/api/v1/downloads/
 eggs/
 .eggs/
 lib/
