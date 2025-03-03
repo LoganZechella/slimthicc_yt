@@ -6,7 +6,7 @@
 # Handle OPTIONS preflight requests - these must come before other redirects
 [[redirects]]
   from = "/api/*"
-  to = "https://slimthicc-yt-api-latest.onrender.com/api/:splat"
+  to = "https://slimthicc-yt.onrender.com/api/:splat"
   status = 204
   force = true
   methods = ["OPTIONS"]
@@ -21,7 +21,7 @@
 # Redirect API calls to your backend (force HTTPS)
 [[redirects]]
   from = "/api/*"
-  to = "https://slimthicc-yt-api-latest.onrender.com/api/:splat"
+  to = "https://slimthicc-yt.onrender.com/api/:splat"
   status = 200
   force = true
   # Add proxy option for CORS handling

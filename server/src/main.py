@@ -179,15 +179,28 @@ app.add_middleware(
 # Also add a raw middleware for handling CORS as a fallback
 @app.middleware("http")
 async def cors_middleware(request: Request, call_next):
+    # Get the origin from the request
+    origin = request.headers.get("origin", "")
+    
     # Process the request
     response = await call_next(request)
     
-    # Add CORS headers to all responses
-    response.headers["Access-Control-Allow-Origin"] = netlify_domain
+    # Add CORS headers to all responses based on the origin
+    if origin == netlify_domain:
+        # If the request is from our Netlify domain, set that as the allowed origin
+        response.headers["Access-Control-Allow-Origin"] = netlify_domain
+    else:
+        # Otherwise allow all origins
+        response.headers["Access-Control-Allow-Origin"] = "*"
+        
     response.headers["Access-Control-Allow-Credentials"] = "true"
     response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, OPTIONS, PATCH"
     response.headers["Access-Control-Allow-Headers"] = "*"
     response.headers["Access-Control-Max-Age"] = "86400"
+    
+    # Log headers for debugging
+    if request.method == "OPTIONS":
+        logger.info(f"CORS headers set for OPTIONS request from {origin}: {dict(response.headers)}")
     
     # If it's an OPTIONS request, return a 200 response immediately
     if request.method == "OPTIONS":
@@ -590,26 +603,34 @@ async def _send_task_status_update(task_id: str, websocket: WebSocket):
         logger.error(f"Error sending task status update for {task_id}: {e}", exc_info=True)
 
 @app.options("/api/v1/cors-test")
-async def cors_test_preflight():
+async def cors_test_preflight(request: Request):
     """
     OPTIONS endpoint that explicitly tests CORS preflight requests.
     This route handles the OPTIONS preflight request for CORS testing.
     """
-    logger.info("Received OPTIONS request to /api/v1/cors-test")
+    origin = request.headers.get("origin", "unknown")
+    logger.info(f"Received OPTIONS request to /api/v1/cors-test from origin: {origin}")
+    
+    # No content needed for OPTIONS response
     return {}
 
 @app.get("/api/v1/cors-test")
-async def cors_test():
+async def cors_test(request: Request):
     """
     Simple endpoint to test if CORS is working correctly.
     Frontend can call this endpoint to verify CORS headers are being set properly.
     """
-    logger.info("Received GET request to /api/v1/cors-test")
+    origin = request.headers.get("origin", "unknown")
+    logger.info(f"Received GET request to /api/v1/cors-test from origin: {origin}")
+    
     return {
         "status": "success",
         "message": "CORS is configured correctly!",
         "cors_origins": allowed_origins,
-        "netlify_domain": netlify_domain
+        "netlify_domain": netlify_domain,
+        "request_origin": origin,
+        "timestamp": time.time(),
+        "server": "slimthicc-yt.onrender.com"
     }
 
 if __name__ == "__main__":

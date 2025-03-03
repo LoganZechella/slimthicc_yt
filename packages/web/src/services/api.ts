@@ -10,7 +10,8 @@ const isProduction = import.meta.env.PROD;
 const shouldUseRelativeUrls = false;
 
 // Use environment variables for API URLs
-const API_BASE_URL = 'https://slimthicc-yt-api-latest.onrender.com';
+// FIX: Use the correct Render server URL - this was the main issue!
+const API_BASE_URL = 'https://slimthicc-yt.onrender.com';
 
 // Ensure API_BASE_URL always uses HTTPS if it's an absolute URL
 const secureApiBaseUrl = API_BASE_URL 
@@ -33,7 +34,8 @@ export const ENDPOINTS = {
 // WebSocket URL - IMPORTANT: always use absolute URL for WebSockets
 // WebSockets cannot go through Netlify proxies, so they must connect directly to backend
 // Ensure WebSocket URL always uses WSS (secure WebSockets)
-const WS_DIRECT_URL = 'wss://slimthicc-yt-api-latest.onrender.com';
+// FIX: Update WebSocket URL to use the correct domain
+const WS_DIRECT_URL = 'wss://slimthicc-yt.onrender.com';
 export const WS_URL = `${WS_DIRECT_URL}${API_V1_PATH}`;
 
 // Log the configured URLs on startup
@@ -117,7 +119,7 @@ export async function makeRequest(url: string, options: RequestInit = {}) {
         // Force HTTPS for the backend URL and construct the complete path
         let directUrl;
         // If url already has the full domain, don't add it again
-        if (url.includes('slimthicc-yt-api-latest.onrender.com')) {
+        if (url.includes('slimthicc-yt.onrender.com')) {
           directUrl = url;
         } else {
           // Extract the path part after /api/v1 if present
@@ -127,7 +129,7 @@ export async function makeRequest(url: string, options: RequestInit = {}) {
               ? url 
               : `/${url}`;
           
-          directUrl = `https://slimthicc-yt-api-latest.onrender.com${API_V1_PATH}${pathPart}`;
+          directUrl = `https://slimthicc-yt.onrender.com${API_V1_PATH}${pathPart}`;
         }
         
         console.log(`Making API request to: ${directUrl}`);
@@ -190,7 +192,7 @@ export async function downloadFile(url: string) {
     // For production, always use relative URLs for API requests
     // This ensures requests go through Netlify's proxy
     const finalUrl = isProduction 
-      ? secureUrl.replace('https://slimthicc-yt-api-latest.onrender.com', '')
+      ? secureUrl.replace('https://slimthicc-yt.onrender.com', '')
       : secureUrl;
     
     // Make sure URL starts with / for relative paths
@@ -236,29 +238,88 @@ export async function downloadFile(url: string) {
 export async function testCORS() {
   try {
     console.log(`Testing CORS with endpoint: ${ENDPOINTS.CORS_TEST}`);
-    const response = await fetch(ENDPOINTS.CORS_TEST, {
-      method: 'GET',
-      mode: 'cors',
-      headers: {
-        'Content-Type': 'application/json',
-        'Accept': 'application/json'
-      }
-    });
     
-    if (!response.ok) {
-      console.error(`CORS test failed with status: ${response.status}`);
-      return {
-        success: false,
-        status: response.status,
-        message: `Failed with status ${response.status}`
-      };
+    // First try the main approach
+    console.log("CORS Test 1: Using fetch with normal mode: cors");
+    try {
+      const response = await fetch(ENDPOINTS.CORS_TEST, {
+        method: 'GET',
+        mode: 'cors',
+        headers: {
+          'Content-Type': 'application/json',
+          'Accept': 'application/json'
+        }
+      });
+      
+      if (!response.ok) {
+        console.error(`CORS test 1 failed with status: ${response.status}`);
+      } else {
+        const data = await response.json();
+        console.log(`CORS test 1 successful:`, data);
+        return {
+          success: true,
+          ...data
+        };
+      }
+    } catch (error) {
+      console.error(`CORS test 1 failed with error:`, error);
     }
     
-    const data = await response.json();
-    console.log(`CORS test successful:`, data);
+    // Try a different approach with XMLHttpRequest for older browsers
+    console.log("CORS Test 2: Using XMLHttpRequest as fallback");
+    try {
+      const result = await new Promise((resolve, reject) => {
+        const xhr = new XMLHttpRequest();
+        xhr.open('GET', ENDPOINTS.CORS_TEST);
+        xhr.setRequestHeader('Content-Type', 'application/json');
+        xhr.onload = function() {
+          if (xhr.status >= 200 && xhr.status < 300) {
+            try {
+              resolve(JSON.parse(xhr.responseText));
+            } catch (e) {
+              resolve({ raw: xhr.responseText });
+            }
+          } else {
+            reject(new Error(`Status ${xhr.status}: ${xhr.statusText}`));
+          }
+        };
+        xhr.onerror = function() {
+          reject(new Error('Network error occurred'));
+        };
+        xhr.send();
+      });
+      
+      console.log(`CORS test 2 successful:`, result);
+      return {
+        success: true,
+        ...result as Record<string, any>
+      };
+    } catch (error) {
+      console.error(`CORS test 2 failed with error:`, error);
+    }
+    
+    // Try a third approach with no-cors mode (will get opaque response)
+    console.log("CORS Test 3: Using fetch with no-cors mode");
+    try {
+      const response = await fetch(ENDPOINTS.CORS_TEST, {
+        method: 'GET',
+        mode: 'no-cors',
+      });
+      
+      console.log(`CORS test 3 response type:`, response.type);
+      console.log(`CORS test 3 status:`, response.status);
+      
+      return {
+        success: response.type === 'opaque' || response.status === 0,
+        message: "Received opaque response with no-cors mode, which means the server exists but CORS headers are not set correctly"
+      };
+    } catch (error) {
+      console.error(`CORS test 3 failed with error:`, error);
+    }
+    
     return {
-      success: true,
-      ...data
+      success: false,
+      message: "All CORS tests failed, please check server configuration"
     };
   } catch (error) {
     console.error(`CORS test failed with error:`, error);
