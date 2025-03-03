@@ -1,0 +1,30 @@
+services:
+  - type: web
+    name: slimthicc-yt-api
+    runtime: python
+    region: oregon
+    plan: starter
+    buildCommand: chmod +x setup_render.sh && ./setup_render.sh && cd server && pip install --upgrade pip && pip install -r requirements.txt
+    startCommand: cd server && gunicorn -k uvicorn.workers.UvicornWorker src.main:app --bind 0.0.0.0:$PORT --timeout 120
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.12.1
+      - key: MONGODB_URL
+        sync: false
+      - key: SPOTIPY_CLIENT_ID
+        sync: false
+      - key: SPOTIPY_CLIENT_SECRET
+        sync: false
+      - key: YOUTUBE_PO_TOKEN
+        sync: false
+      - key: DEBUG
+        value: "false"
+    autoDeploy: true
+    disk:
+      name: downloads
+      mountPath: /app/downloads
+      sizeGB: 1
+    # Uncomment and configure this if you have a YouTube cookies file
+    # secretFiles:
+    #   - key: YOUTUBE_COOKIES
+    #     mountPath: /app/youtube.cookies 

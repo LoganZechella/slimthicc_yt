@@ -388,6 +388,14 @@ async def global_fallback_websocket_endpoint(websocket: WebSocket, path: str):
 # Include API router
 app.include_router(api_router, prefix=settings.API_V1_STR)
 
+# Health check endpoint for Render
+@app.get(f"{settings.API_V1_STR}/health", tags=["health"])
+async def health_check():
+    """
+    Health check endpoint for monitoring services
+    """
+    return {"status": "healthy", "version": settings.VERSION}
+
 @app.on_event("startup")
 async def startup_db_client():
     # Log important environment variables (redacted for security)
@@ -421,10 +429,6 @@ async def root():
         "version": settings.VERSION,
         "status": "running"
     }
-
-@app.get("/health")
-async def health_check():
-    return {"status": "healthy"}
 
 # Helper function to send task status update
 async def _send_task_status_update(task_id: str, websocket: WebSocket):
