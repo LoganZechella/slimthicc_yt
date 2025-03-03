@@ -505,20 +505,22 @@ class DownloadTaskManager:
                                     files_found = False
                                     
                                     # Look for the Spotify file directory
-                                    spotify_output_dir = "/app/downloads" 
+                                    spotify_output_dir_docker = "/app/downloads"
+                                    spotify_output_dir = "/opt/render/project/src/server/downloads"
                                     
                                     # Log the possible success differently for Spotify
-                                    logger.info(f"Spotify download reported complete. Checking for files in {spotify_output_dir}")
+                                    logger.info(f"Spotify download reported complete. Files saved to: {spotify_output_dir}")
                                     
-                                    # Include the directory in the error message for the file endpoint to use
-                                    success_message = f"Download completed but tracks saved in {spotify_output_dir}. Use the download button to access files."
+                                    # Include both paths for compatibility
+                                    success_message = f"Download completed successfully. Click download to access files."
                                     
                                     await self.update_task(
                                         task,
                                         status=DownloadStatus.COMPLETE,
-                                        spotify_output_dir=spotify_output_dir,
-                                        error=success_message,  # This is not really an error but a message to the endpoint
-                                        output_path="/app/downloads/playlist_files.mp3"  # Placeholder to mark as completed with files
+                                        spotify_output_dir=spotify_output_dir,  # Use the Render path
+                                        docker_spotify_output_dir=spotify_output_dir_docker,  # Keep Docker path for reference
+                                        error=None,  # No error, successful download
+                                        output_path=f"{spotify_output_dir}/playlist_files.mp3"  # Use Render path
                                     )
                                     
                                     # Send a final success message with download instructions

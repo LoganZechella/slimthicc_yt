@@ -217,40 +217,58 @@ async def download_file(task_id: str, background_tasks: BackgroundTasks):
         # Fix for Spotify playlists which may specify a path in /app/downloads
         # Check if this is a Spotify task with a special directory format
         if hasattr(task, 'spotify_output_dir') and task.spotify_output_dir:
-            # Convert Docker path to Render path
+            # Use the spotify_output_dir from the task, which should now be using Render paths
             logger.info(f"Found Spotify task with output dir: {task.spotify_output_dir}")
-            docker_path = task.spotify_output_dir
-            if docker_path.startswith('/app/'):
+            
+            # Use the direct path from the task (should already be converted)
+            file_path = Path(task.spotify_output_dir)
+            
+            # Double-check if it's a Docker path and convert if needed
+            if str(file_path).startswith('/app/'):
                 # Convert Docker path to Render path
-                file_path = Path(docker_path.replace('/app/', '/opt/render/project/src/server/'))
-                logger.info(f"Converted Docker path {docker_path} to Render path {file_path}")
-            else:
-                file_path = Path(docker_path)
+                file_path = Path(str(file_path).replace('/app/', '/opt/render/project/src/server/'))
+                logger.info(f"Converted Docker path to Render path: {file_path}")
+            
+            logger.info(f"Using Spotify output directory: {file_path}")
             
             # If it's a directory, we need to create a ZIP of all files
             if file_path.is_dir():
                 logger.info(f"Found Spotify playlist directory: {file_path}")
-                # Get all MP3 files in the directory
-                mp3_files = list(file_path.glob("*.mp3"))
-                logger.info(f"Found {len(mp3_files)} MP3 files in directory")
                 
-                if not mp3_files:
-                    logger.error(f"No MP3 files found in Spotify output directory: {file_path}")
-                    raise HTTPException(status_code=404, detail="No MP3 files found")
+                # Try multiple file extensions (mp3, m4a, etc.)
+                audio_files = []
+                for ext in ["*.mp3", "*.m4a", "*.flac", "*.wav"]:
+                    audio_files.extend(list(file_path.glob(ext)))
+                
+                logger.info(f"Found {len(audio_files)} audio files in directory")
+                
+                if not audio_files:
+                    # Try to check the Docker path location if nothing found in Render path
+                    docker_path = Path(str(file_path).replace('/opt/render/project/src/server/', '/app/'))
+                    logger.warning(f"No files found at {file_path}, trying to check if files exist at Docker path: {docker_path}")
+                    
+                    # Try the download process output
+                    if hasattr(task, 'download_process_output') and task.download_process_output:
+                        logger.info(f"Checking download process output for file paths: {task.download_process_output}")
+                        
+                    # Additional debugging for task
+                    logger.info(f"Task details: {task.model_dump()}")
+                    
+                    raise HTTPException(status_code=404, detail="No audio files found in the download directory. Please try downloading again.")
                 
                 # If only one file, return it directly
-                if len(mp3_files) == 1:
-                    file_path = mp3_files[0]
-                    logger.info(f"Only one MP3 file found, returning it directly: {file_path}")
+                if len(audio_files) == 1:
+                    file_path = audio_files[0]
+                    logger.info(f"Only one audio file found, returning it directly: {file_path}")
                 else:
                     # Create a ZIP file for multiple files
                     zip_path = Path(f"/opt/render/project/src/server/downloads/{task_id}_playlist.zip")
-                    logger.info(f"Creating ZIP file for multiple MP3 files: {zip_path}")
+                    logger.info(f"Creating ZIP file for multiple audio files: {zip_path}")
                     
-                    # Create a ZIP file containing all MP3 files
+                    # Create a ZIP file containing all audio files
                     with zipfile.ZipFile(zip_path, 'w') as zipf:
-                        for mp3_file in mp3_files:
-                            zipf.write(mp3_file, arcname=mp3_file.name)
+                        for audio_file in audio_files:
+                            zipf.write(audio_file, arcname=audio_file.name)
                     
                     file_path = zip_path
                     logger.info(f"ZIP file created: {file_path}")
