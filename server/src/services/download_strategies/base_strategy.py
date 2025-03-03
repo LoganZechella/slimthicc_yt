@@ -3,6 +3,8 @@ from typing import Dict, Any, Optional, AsyncGenerator, Union
 import logging
 from pathlib import Path
 
+from ....models.download import DownloadTask
+
 logger = logging.getLogger(__name__)
 
 class DownloadStrategy(ABC):
@@ -19,21 +21,21 @@ class DownloadStrategy(ABC):
             url: The URL to get information about
             
         Returns:
-            A dictionary of information about the media
+            A dictionary containing information about the media
         """
         pass
     
     @abstractmethod
-    async def download(self, url: str, output_path: Union[str, Path]) -> Optional[str]:
+    async def download(self, task: DownloadTask, options: Optional[dict] = None) -> AsyncGenerator[dict, None]:
         """
-        Download media from the URL to the output path
+        Download the media at the specified URL
         
         Args:
-            url: The URL to download from
-            output_path: The path to save the file to
+            task: The download task containing URL and metadata
+            options: Optional parameters for the download
             
-        Returns:
-            The path to the downloaded file if successful, None otherwise
+        Yields:
+            Progress updates as dictionaries
         """
         pass
     
@@ -54,5 +56,32 @@ class DownloadStrategy(ABC):
     async def cleanup(self):
         """
         Clean up any resources used by this strategy
+        """
+        pass
+    
+    @abstractmethod
+    async def run(self, task: DownloadTask) -> AsyncGenerator[dict, None]:
+        """
+        Run the download strategy for a task
+        
+        Args:
+            task: The download task to process
+            
+        Yields:
+            Progress updates as dictionaries
+        """
+        pass
+    
+    @staticmethod
+    @abstractmethod
+    def can_handle(url: str) -> bool:
+        """
+        Check if this strategy can handle the given URL (static method)
+        
+        Args:
+            url: The URL to check
+            
+        Returns:
+            True if this strategy can handle the URL, False otherwise
         """
         pass 

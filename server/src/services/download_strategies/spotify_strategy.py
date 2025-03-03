@@ -10,8 +10,8 @@ import shutil
 from typing import Dict, List, Any, Optional, Generator, AsyncGenerator, Union
 from pathlib import Path
 
-from src.config.settings import settings
-from src.models.download_task import DownloadTask
+from ....config.settings import settings
+from ....models.download import DownloadTask, DownloadStatus, DownloadError
 from .base_strategy import DownloadStrategy
 from .ytdlp_strategy import YtdlpStrategy
 
