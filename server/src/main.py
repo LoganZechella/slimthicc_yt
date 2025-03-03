@@ -163,7 +163,8 @@ logger.info(f"Configuring CORS with origins: {settings.CORS_ORIGINS}")
 # Always allow all origins for WebSocket connections
 # WebSocket connections must come directly from the browser to the server
 logger.warning("WebSocket connections require direct access - allowing all origins")
-cors_origins = ["*"]  # This ensures WebSocket connections work from any origin
+# FIX: Explicitly include the Netlify domain and use wildcard properly
+cors_origins = ["*", "https://slimthicc-commandcenter.netlify.app"]
 settings.CORS_ALLOW_ALL = True
 
 # Set up CORS middleware with improved handling of preflight requests
@@ -197,6 +198,24 @@ async def cors_debug_middleware(request: Request, call_next):
         if request.method == "OPTIONS":
             # Log the response headers for debugging
             logger.info(f"Responding to OPTIONS request with headers: {dict(response.headers)}")
+            
+            # FIX: Ensure OPTIONS requests get CORS headers even if they don't match routes
+            if "access-control-allow-origin" not in response.headers:
+                netlify_domain = "https://slimthicc-commandcenter.netlify.app"
+                origin = request.headers.get("origin")
+                
+                # If the origin matches our Netlify domain, explicitly add it
+                if origin == netlify_domain:
+                    response.headers["access-control-allow-origin"] = netlify_domain
+                    response.headers["access-control-allow-methods"] = "GET, POST, PUT, DELETE, OPTIONS, PATCH"
+                    response.headers["access-control-allow-headers"] = "*"
+                    response.headers["access-control-max-age"] = "86400"
+                # Otherwise, use wildcard if allow_all is enabled
+                elif settings.CORS_ALLOW_ALL:
+                    response.headers["access-control-allow-origin"] = "*"
+                    response.headers["access-control-allow-methods"] = "GET, POST, PUT, DELETE, OPTIONS, PATCH"
+                    response.headers["access-control-allow-headers"] = "*"
+                    response.headers["access-control-max-age"] = "86400"
         
         # Log 404 responses for debugging
         if response.status_code == 404:
