@@ -7,12 +7,13 @@ import tempfile
 import subprocess
 import time
 import shutil
-from typing import Dict, List, Any, Optional, Generator, AsyncGenerator
+from typing import Dict, List, Any, Optional, Generator, AsyncGenerator, Union
 from pathlib import Path
 
-from .base import DownloadStrategy
+from src.config.settings import settings
+from src.models.download_task import DownloadTask
+from .base_strategy import DownloadStrategy
 from .ytdlp_strategy import YtdlpStrategy
-from ...config.settings import settings
 
 logger = logging.getLogger(__name__)
 
