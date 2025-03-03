@@ -502,14 +502,35 @@ async def download_file(task_id: str, background_tasks: BackgroundTasks):
                 file_stats = Path(file_path).stat()
                 filename = os.path.basename(file_path)
                 
+                # Determine media type based on file extension
+                media_type = "application/octet-stream"  # Default
+                if filename.lower().endswith(".mp3"):
+                    media_type = "audio/mpeg"
+                elif filename.lower().endswith(".m4a"):
+                    media_type = "audio/m4a"
+                elif filename.lower().endswith(".zip"):
+                    media_type = "application/zip"
+                elif filename.lower().endswith(".flac"):
+                    media_type = "audio/flac"
+                elif filename.lower().endswith(".wav"):
+                    media_type = "audio/wav"
+                
+                # Return file response with cleanup scheduled and explicit Content-Length
+                file_size = file_stats.st_size
+                headers = {
+                    "Content-Length": str(file_size),
+                    "Content-Type": media_type,
+                    "Content-Disposition": f'attachment; filename="{filename}"'
+                }
+                
                 # Register background task to clean up file after serving
                 background_tasks.add_task(cleanup_after_download, file_path, [file_path])
                 
-                # Return file response with cleanup scheduled
                 return FileResponse(
-                    file_path,
-                    media_type="audio/mpeg",
-                    filename=filename
+                    path=file_path,
+                    filename=filename,
+                    media_type=media_type,
+                    headers=headers
                 )
             
             # If we still couldn't find a file
@@ -610,20 +631,30 @@ async def download_file(task_id: str, background_tasks: BackgroundTasks):
         background_tasks.add_task(cleanup_after_download, file_path, [file_path])
         
         # Return the file response
+        file_size = Path(file_path).stat().st_size
+        headers = {
+            "Content-Length": str(file_size),
+            "Content-Type": media_type,
+            "Content-Disposition": f'attachment; filename="{filename}"'
+        }
+        
         return FileResponse(
             path=file_path,
+            filename=filename,
             media_type=media_type,
-            filename=filename
+            headers=headers
         )
         
     except Exception as e:
-        logger.error(f"Error in download file endpoint: {e}")
+        logger.error(f"Error in download file endpoint: {e}", exc_info=True)
         # Format error message for better client feedback
         error_message = str(e)
         if "No such file or directory" in error_message:
             error_message = "File not found on server. It may have been cleaned up or moved."
         elif "Permission denied" in error_message:
             error_message = "Server doesn't have permission to access the file."
+        elif "Content-Length" in error_message:
+            error_message = "Error preparing file for download. Please try again."
             
         raise HTTPException(status_code=500, detail=error_message)
 

@@ -187,33 +187,29 @@ async def cors_middleware(request: Request, call_next):
     if request.headers.get("upgrade", "").lower() == "websocket":
         return await call_next(request)
     
-    # Process the request
+    # Handle OPTIONS requests immediately
+    if request.method == "OPTIONS":
+        headers = {
+            "Access-Control-Allow-Origin": netlify_domain if origin == netlify_domain else "*",
+            "Access-Control-Allow-Credentials": "true",
+            "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS, PATCH",
+            "Access-Control-Allow-Headers": "*",
+            "Access-Control-Max-Age": "86400",
+            "Content-Type": "text/plain",
+            "Content-Length": "0"
+        }
+        logger.info(f"CORS headers set for OPTIONS request from {origin}: {headers}")
+        return Response(status_code=200, headers=headers)
+    
+    # Process non-OPTIONS requests
     response = await call_next(request)
     
     # Add CORS headers to all responses based on the origin
-    if origin == netlify_domain:
-        # If the request is from our Netlify domain, set that as the allowed origin
-        response.headers["Access-Control-Allow-Origin"] = netlify_domain
-    else:
-        # Otherwise allow all origins
-        response.headers["Access-Control-Allow-Origin"] = "*"
-        
+    response.headers["Access-Control-Allow-Origin"] = netlify_domain if origin == netlify_domain else "*"
     response.headers["Access-Control-Allow-Credentials"] = "true"
     response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, OPTIONS, PATCH"
     response.headers["Access-Control-Allow-Headers"] = "*"
     response.headers["Access-Control-Max-Age"] = "86400"
-    
-    # Log headers for debugging
-    if request.method == "OPTIONS":
-        logger.info(f"CORS headers set for OPTIONS request from {origin}: {dict(response.headers)}")
-    
-    # If it's an OPTIONS request, ensure we're not setting Content-Length incorrectly
-    if request.method == "OPTIONS":
-        return Response(
-            status_code=200,
-            headers=response.headers,
-            content=""  # Empty content for OPTIONS
-        )
     
     return response
 
