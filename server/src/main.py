@@ -182,6 +182,10 @@ async def cors_middleware(request: Request, call_next):
     # Get the origin from the request
     origin = request.headers.get("origin", "")
     
+    # If this is a WebSocket upgrade request, bypass CORS checks
+    if request.headers.get("upgrade", "").lower() == "websocket":
+        return await call_next(request)
+    
     # Process the request
     response = await call_next(request)
     
@@ -202,11 +206,12 @@ async def cors_middleware(request: Request, call_next):
     if request.method == "OPTIONS":
         logger.info(f"CORS headers set for OPTIONS request from {origin}: {dict(response.headers)}")
     
-    # If it's an OPTIONS request, return a 200 response immediately
+    # If it's an OPTIONS request, ensure we're not setting Content-Length incorrectly
     if request.method == "OPTIONS":
         return Response(
             status_code=200,
-            headers=response.headers
+            headers=response.headers,
+            content=""  # Empty content for OPTIONS
         )
     
     return response
@@ -242,14 +247,18 @@ async def websocket_endpoint(websocket: WebSocket, task_id: str):
         logger.info(f"WebSocket connection for task {task_id} from origin: {origin}, client: {client_host}, agent: {user_agent}")
         
         # Accept the connection through the websocket_manager
+        await websocket.accept()
+        logger.info(f"WebSocket connection accepted for task {task_id}")
+        
+        # Register with websocket_manager after accepting
         connection_accepted = await websocket_manager.connect(websocket, task_id)
         
         if not connection_accepted:
-            logger.error(f"Failed to accept WebSocket connection for task {task_id}")
+            logger.error(f"Failed to register WebSocket connection for task {task_id}")
             await websocket.close(code=1011, reason="Failed to establish connection")
             return
             
-        logger.info(f"WebSocket connection established for task {task_id}")
+        logger.info(f"WebSocket connection established and registered for task {task_id}")
         
         # Send initial connection status
         try:
@@ -266,80 +275,81 @@ async def websocket_endpoint(websocket: WebSocket, task_id: str):
         try:
             while True:
                 # Wait for messages from the client
-                data = await websocket.receive_text()
-                
                 try:
-                    message = json.loads(data)
-                    logger.debug(f"Received message from client for task {task_id}: {message}")
+                    data = await websocket.receive_text()
                     
-                    # Handle ping messages
-                    if message.get("type") == "ping":
-                        await websocket.send_json({
-                            "type": "pong",
-                            "timestamp": message.get("timestamp"),
-                            "server_timestamp": time.time()
-                        })
-                        continue
-                    
-                    # Handle hello messages - explicit acknowledgment to improve connection reliability
-                    if message.get("type") == "hello":
-                        logger.info(f"Received hello message from client for task {task_id}")
-                        # Respond with connection acknowledgment
-                        await websocket.send_json({
-                            "type": "hello_ack",
-                            "task_id": task_id,
-                            "timestamp": time.time(),
-                            "message": "Hello received, connection confirmed"
-                        })
+                    try:
+                        message = json.loads(data)
+                        logger.debug(f"Received message from client for task {task_id}: {message}")
                         
-                        # Ensure connection is marked as active in websocket_manager
-                        async with websocket_manager.connection_lock:
-                            if task_id in websocket_manager.active_connections:
-                                if websocket not in websocket_manager.active_connections[task_id]:
-                                    websocket_manager.active_connections[task_id].append(websocket)
-                                    websocket_manager.connection_timestamps[task_id][websocket] = time.time()
-                                    logger.info(f"Re-registered connection for task {task_id} after hello message")
+                        # Handle ping messages
+                        if message.get("type") == "ping":
+                            await websocket.send_json({
+                                "type": "pong",
+                                "timestamp": message.get("timestamp"),
+                                "server_timestamp": time.time()
+                            })
+                            continue
                         
-                        # Send current task status
-                        await _send_task_status_update(task_id, websocket)
-                        continue
-                    
-                    # Handle other message types
-                    message_type = message.get("type", "unknown")
-                    logger.debug(f"Processing message type: {message_type} for task {task_id}")
-                    
-                    # Get task status and send update
-                    from services.download_task_manager import download_task_manager
-                    task = await download_task_manager.get_task(task_id)
-                    
-                    if task:
-                        status_update = {
-                            "status": task.status,
-                            "progress": task.progress,
-                            "timestamp": time.time()
-                        }
-                        
-                        # Include details if available
-                        if hasattr(task, 'details') and task.details:
-                            status_update["details"] = task.details
+                        # Handle hello messages - explicit acknowledgment to improve connection reliability
+                        if message.get("type") == "hello":
+                            logger.info(f"Received hello message from client for task {task_id}")
+                            # Respond with connection acknowledgment
+                            await websocket.send_json({
+                                "type": "hello_ack",
+                                "task_id": task_id,
+                                "timestamp": time.time(),
+                                "message": "Hello received, connection confirmed"
+                            })
                             
-                        # Include error if there is one
-                        if hasattr(task, 'error') and task.error:
-                            status_update["error"] = task.error
+                            # Ensure connection is marked as active in websocket_manager
+                            async with websocket_manager.connection_lock:
+                                if task_id in websocket_manager.active_connections:
+                                    if websocket not in websocket_manager.active_connections[task_id]:
+                                        websocket_manager.active_connections[task_id].append(websocket)
+                                        websocket_manager.connection_timestamps[task_id][websocket] = time.time()
+                                        logger.info(f"Re-registered connection for task {task_id} after hello message")
                             
-                        await websocket.send_json(status_update)
-                        logger.debug(f"Sent status update for task {task_id}: {task.status}, progress: {task.progress}")
-                    else:
-                        logger.warning(f"Task {task_id} not found when sending status update")
-                        await websocket.send_json({"error": f"Task {task_id} not found"})
+                            # Send current task status
+                            await _send_task_status_update(task_id, websocket)
+                            continue
+                        
+                        # Get task status and send update
+                        from services.download_task_manager import download_task_manager
+                        task = await download_task_manager.get_task(task_id)
+                        
+                        if task:
+                            status_update = {
+                                "status": task.status,
+                                "progress": task.progress,
+                                "timestamp": time.time()
+                            }
+                            
+                            # Include details if available
+                            if hasattr(task, 'details') and task.details:
+                                status_update["details"] = task.details
+                                
+                            # Include error if there is one
+                            if hasattr(task, 'error') and task.error:
+                                status_update["error"] = task.error
+                                
+                            await websocket.send_json(status_update)
+                            logger.debug(f"Sent status update for task {task_id}: {task.status}, progress: {task.progress}")
+                        else:
+                            logger.warning(f"Task {task_id} not found when sending status update")
+                            await websocket.send_json({"error": f"Task {task_id} not found"})
+                            
+                    except json.JSONDecodeError:
+                        logger.warning(f"Received invalid JSON from client for task {task_id}: {data}")
+                    except Exception as msg_error:
+                        logger.error(f"Error processing message for task {task_id}: {msg_error}", exc_info=True)
+                        
+                except WebSocketDisconnect:
+                    logger.info(f"Client disconnected for task {task_id}")
+                    break
                     
-                except json.JSONDecodeError:
-                    logger.warning(f"Received invalid JSON from client for task {task_id}: {data}")
-                except Exception as msg_error:
-                    logger.error(f"Error processing message for task {task_id}: {msg_error}", exc_info=True)
-                
-        except WebSocketDisconnect as disconnect_error:
-            logger.info(f"WebSocket disconnected for task {task_id}: code={getattr(disconnect_error, 'code', 'unknown')}")
+        except WebSocketDisconnect:
+            logger.info(f"WebSocket disconnected for task {task_id}")
         except Exception as ws_error:
             logger.error(f"Error in WebSocket communication for task {task_id}: {ws_error}", exc_info=True)
         finally:
