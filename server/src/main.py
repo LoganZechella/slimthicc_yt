@@ -3,18 +3,35 @@ import os
 import sys
 from pathlib import Path
 
+# Print debug information about the current environment
+print(f"Current working directory: {os.getcwd()}")
+print(f"Python path: {sys.path}")
+
 # Add the parent directory to the Python path to resolve "src" imports
 SERVER_DIR = Path(__file__).resolve().parent.parent
 if SERVER_DIR not in sys.path:
     sys.path.append(str(SERVER_DIR))
+    print(f"Added {SERVER_DIR} to Python path")
+
+try:
+    # First try local/relative imports
+    from config.settings import settings
+    from config.database import connect_to_mongo, close_mongo_connection
+    from api.v1.router import router as api_router
+    from services.websocket_manager import websocket_manager
+    print("Using relative imports")
+except ImportError as e:
+    print(f"Relative import failed: {e}")
+    # Fall back to absolute imports
+    from src.config.settings import settings
+    from src.config.database import connect_to_mongo, close_mongo_connection
+    from src.api.v1.router import router as api_router
+    from src.services.websocket_manager import websocket_manager
+    print("Using absolute imports")
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
-from src.config.settings import settings
-from src.config.database import connect_to_mongo, close_mongo_connection
-from src.api.v1.router import router as api_router
-from src.services.websocket_manager import websocket_manager
 import json
 import logging
 import re
