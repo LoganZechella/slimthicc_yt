@@ -1,6 +1,8 @@
 # First, ensure the right path is in the system path
 import os
 import sys
+import time
+import asyncio
 from pathlib import Path
 
 # Print debug information about the current environment
@@ -236,21 +238,66 @@ async def websocket_endpoint(websocket: WebSocket, task_id: str):
     try:
         logger.info(f"WebSocket connection request for task {task_id} from {websocket.client.host}")
         
-        # Accept the connection here
+        # Accept the connection
         await websocket.accept()
         logger.info(f"WebSocket connection accepted for task {task_id}")
         
-        # Import the router here to avoid circular imports
-        from src.api.v1.downloads.router import router as downloads_router
+        # Get the WebSocket manager
+        from src.services.websocket_manager import websocket_manager
+        from src.services.download_task_manager import download_task_manager
         
-        # Forward to the router's endpoint
-        await downloads_router.main_websocket_endpoint(websocket, task_id)
+        # Connect to the WebSocket manager
+        await websocket_manager.connect(websocket, task_id)
+        
+        # Get and send the initial task status
+        task = await download_task_manager.get_task(task_id)
+        if task:
+            initial_status = {
+                "type": "status",
+                "task_id": task_id,
+                "status": task.status,
+                "progress": task.progress,
+                "title": task.title,
+                "error": task.error,
+                "timestamp": time.time()
+            }
+            await websocket.send_json(initial_status)
+            logger.info(f"Sent initial status for task {task_id}")
+        
+        # Handle messages from client
+        while True:
+            try:
+                # Wait for a message with a timeout
+                message_json = await asyncio.wait_for(websocket.receive_json(), timeout=60)
+                
+                # Handle client message - usually "hello" or heartbeat
+                msg_type = message_json.get("type", "unknown")
+                logger.info(f"Received {msg_type} message from client for task {task_id}")
+                
+                # Send acknowledgment
+                await websocket.send_json({"type": "ack", "for": msg_type, "task_id": task_id})
+                
+            except asyncio.TimeoutError:
+                # No message received within timeout, check if connection is still valid
+                logger.debug(f"No message received from client for task {task_id} within timeout")
+                continue
+                
+            except WebSocketDisconnect:
+                logger.info(f"WebSocket disconnected for task {task_id}")
+                await websocket_manager.disconnect(websocket, task_id)
+                break
+                
     except WebSocketDisconnect:
         logger.info(f"WebSocket disconnected for task {task_id}")
+        try:
+            from src.services.websocket_manager import websocket_manager
+            await websocket_manager.disconnect(websocket, task_id)
+        except Exception as e:
+            logger.error(f"Error during disconnect: {str(e)}")
+            
     except Exception as e:
         logger.error(f"Error in WebSocket endpoint for task {task_id}: {str(e)}")
         try:
-            # Try to close the connection if it's still open
             if websocket.client_state.name.lower() == "connected":
                 await websocket.close(code=1011, reason=f"Internal server error: {str(e)}")
         except Exception as close_error:

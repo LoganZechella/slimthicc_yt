@@ -338,15 +338,18 @@ async def download_file(task_id: str, background_tasks: BackgroundTasks):
 @router.websocket("/{task_id}/ws")
 async def main_websocket_endpoint(websocket: WebSocket, task_id: str):
     """Main WebSocket endpoint for real-time task updates."""
+    logger.error("THE ROUTER VERSION OF THE WEBSOCKET ENDPOINT IS CALLED - THIS SHOULD NOT HAPPEN")
+    logger.error("Please use the main.py WebSocket endpoint instead")
     try:
         logger.info(f"Main WebSocket router endpoint reached for task {task_id} from {websocket.client.host}")
         
-        # Check if the connection has already been accepted (from main.py)
+        # This function is no longer directly called. It's handled by main.py's endpoint instead.
+        # If we do get here, check if the connection needs to be accepted
         if websocket.client_state != WebSocketState.CONNECTED:
             logger.info(f"Accepting WebSocket connection for task {task_id}")
             await websocket.accept()
         
-        # Accept the connection in the websocket manager
+        # We'll still handle the connection if we get here
         await websocket_manager.connect(websocket, task_id)
         logger.info(f"WebSocket connection established and registered for task {task_id}")
         

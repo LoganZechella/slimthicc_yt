@@ -36,8 +36,11 @@ class WebsocketManager:
             bool: True if connection successfully registered, False otherwise
         """
         try:
-            # Accept the connection
-            await websocket.accept()
+            # Check if the connection has already been accepted
+            if websocket.client_state.name.lower() != "connected":
+                # Only accept if not already connected
+                await websocket.accept()
+                
             logger.info(f"WebSocket connected: {client_id} (total connections: {self.total_connections + 1})")
             
             # Initialize client connections list if not exists
