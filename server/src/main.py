@@ -1,7 +1,16 @@
+# First, ensure the right path is in the system path
+import os
+import sys
+from pathlib import Path
+
+# Add the parent directory to the Python path to resolve "src" imports
+SERVER_DIR = Path(__file__).resolve().parent.parent
+if SERVER_DIR not in sys.path:
+    sys.path.append(str(SERVER_DIR))
+
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
-import os
 from src.config.settings import settings
 from src.config.database import connect_to_mongo, close_mongo_connection
 from src.api.v1.router import router as api_router
@@ -9,7 +18,6 @@ from src.services.websocket_manager import websocket_manager
 import json
 import logging
 import re
-import sys
 import uvicorn
 from fastapi.responses import JSONResponse
 import traceback
@@ -424,11 +432,17 @@ async def shutdown_db_client():
 
 @app.get("/")
 async def root():
-    return {
-        "name": settings.PROJECT_NAME,
-        "version": settings.VERSION,
-        "status": "running"
-    }
+    """
+    Root endpoint for health checks
+    """
+    return {"status": "ok", "message": "SlimThicc YT Server is running"}
+
+@app.get("/health")
+async def root_health_check():
+    """
+    Root-level health check endpoint for Render
+    """
+    return {"status": "ok"}
 
 # Helper function to send task status update
 async def _send_task_status_update(task_id: str, websocket: WebSocket):
