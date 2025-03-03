@@ -17,7 +17,7 @@ class WebsocketManager:
         self.connection_lock = asyncio.Lock()  # Lock for thread-safe operations
         self.service_task = None  # Background task for ping service
         self.logger = logging.getLogger("services.websocket_manager")
-        self.ping_interval = 30  # seconds
+        self.ping_interval = 10  # seconds
         self.ping_task = None
         self.total_connections = 0
         self.ping_timeout = 10  # seconds

@@ -132,7 +132,7 @@ class DownloadTaskManager:
             update_dict = {
                 "$set": {
                     **kwargs,
-                    "updated_at": datetime.datetime.utcnow()
+                    "updated_at": datetime.utcnow()
                 }
             }
             

@@ -19,6 +19,7 @@ import zipfile
 import io
 import time
 import asyncio
+from fastapi.websockets import WebSocketState
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -338,9 +339,14 @@ async def download_file(task_id: str, background_tasks: BackgroundTasks):
 async def main_websocket_endpoint(websocket: WebSocket, task_id: str):
     """Main WebSocket endpoint for real-time task updates."""
     try:
-        logger.info(f"Main WebSocket connection request for task {task_id} from {websocket.client.host}")
+        logger.info(f"Main WebSocket router endpoint reached for task {task_id} from {websocket.client.host}")
         
-        # Accept the connection
+        # Check if the connection has already been accepted (from main.py)
+        if websocket.client_state != WebSocketState.CONNECTED:
+            logger.info(f"Accepting WebSocket connection for task {task_id}")
+            await websocket.accept()
+        
+        # Accept the connection in the websocket manager
         await websocket_manager.connect(websocket, task_id)
         logger.info(f"WebSocket connection established and registered for task {task_id}")
         

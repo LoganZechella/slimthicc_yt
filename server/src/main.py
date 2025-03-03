@@ -227,28 +227,34 @@ async def global_exception_handler(request: Request, exc: Exception):
         content={"detail": f"Internal server error: {str(exc)}"}
     )
 
-# Root-level WebSocket catch-all
+# Import the router modules
+from src.api.v1.downloads.router import router as downloads_router
+
 @app.websocket("/api/v1/downloads/{task_id}/ws")
 async def websocket_endpoint(websocket: WebSocket, task_id: str):
-    """WebSocket endpoint for real-time task updates."""
+    """WebSocket endpoint for task status updates."""
     try:
         logger.info(f"WebSocket connection request for task {task_id} from {websocket.client.host}")
         
-        # Accept the connection (note: download_router.main_websocket_endpoint will also call connect)
-        # This ensures the connection is properly handled even if routing fails
+        # Accept the connection here
         await websocket.accept()
         logger.info(f"WebSocket connection accepted for task {task_id}")
         
-        # Forward to the router's endpoint (which also handles connection)
+        # Import the router here to avoid circular imports
+        from src.api.v1.downloads.router import router as downloads_router
+        
+        # Forward to the router's endpoint
         await downloads_router.main_websocket_endpoint(websocket, task_id)
     except WebSocketDisconnect:
         logger.info(f"WebSocket disconnected for task {task_id}")
     except Exception as e:
-        logger.error(f"Error in WebSocket endpoint for task {task_id}: {e}", exc_info=True)
+        logger.error(f"Error in WebSocket endpoint for task {task_id}: {str(e)}")
         try:
-            await websocket_manager.disconnect(websocket, task_id)
-        except Exception:
-            pass
+            # Try to close the connection if it's still open
+            if websocket.client_state.name.lower() == "connected":
+                await websocket.close(code=1011, reason=f"Internal server error: {str(e)}")
+        except Exception as close_error:
+            logger.error(f"Error closing WebSocket connection: {str(close_error)}")
 
 # Root-level WebSocket catch-all with alternative pattern
 @app.websocket("/{path:path}")
