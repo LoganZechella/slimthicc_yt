@@ -6,7 +6,8 @@
 // Determine if we should use absolute URLs or relative URLs
 // In production on Netlify, we want to use relative URLs to leverage the proxy
 const isProduction = import.meta.env.PROD;
-const shouldUseRelativeUrls = isProduction;
+// FIX: Change to always use absolute URLs since Netlify proxy isn't working
+const shouldUseRelativeUrls = false; // Changed from isProduction
 
 // Use environment variables for API URLs, but in production use relative URLs
 const API_BASE_URL = shouldUseRelativeUrls 
@@ -53,9 +54,8 @@ export async function makeRequest(url: string, options: RequestInit = {}) {
     // Log the request for debugging
     console.log(`Making API request to: ${secureUrl}`);
     
-    // For production, always use relative URLs for API requests
-    // This ensures requests go through Netlify's proxy
-    const finalUrl = isProduction 
+    // FIX: Modified to always use absolute URLs
+    const finalUrl = shouldUseRelativeUrls 
       ? secureUrl.replace('https://slimthicc-yt-api-latest.onrender.com', '')
       : secureUrl;
     
@@ -116,15 +116,29 @@ export async function makeRequest(url: string, options: RequestInit = {}) {
     console.error('API request failed:', error);
     
     // Retry with absolute URL for certain errors that might be proxy-related
-    if (isProduction && 
-        error instanceof Error && 
-        error.message?.includes('Failed to fetch') && 
-        !url.startsWith('https://')) {
-      console.log('Attempting fallback to direct backend URL...');
+    // FIX: Simplify fallback logic to always use direct backend URL
+    if (error instanceof Error && 
+        (error.message?.includes('Failed to fetch') || 
+         error.message?.includes('Request failed with status 404'))) {
+      console.log('Attempting fallback to relative URL');
       try {
-        // Force HTTPS for the backend URL
-        const directUrl = `https://slimthicc-yt-api-latest.onrender.com${API_V1_PATH}${url.startsWith('/') ? url : `/${url}`}`;
-        console.log(`Retrying with direct URL: ${directUrl}`);
+        // Force HTTPS for the backend URL and construct the complete path
+        let directUrl;
+        // If url already has the full domain, don't add it again
+        if (url.includes('slimthicc-yt-api-latest.onrender.com')) {
+          directUrl = url;
+        } else {
+          // Extract the path part after /api/v1 if present
+          const pathPart = url.includes('/api/v1') 
+            ? url.split('/api/v1')[1] 
+            : url.startsWith('/') 
+              ? url 
+              : `/${url}`;
+          
+          directUrl = `https://slimthicc-yt-api-latest.onrender.com${API_V1_PATH}${pathPart}`;
+        }
+        
+        console.log(`Making API request to: ${directUrl}`);
         
         const directResponse = await fetch(directUrl, {
           ...options,
@@ -136,15 +150,21 @@ export async function makeRequest(url: string, options: RequestInit = {}) {
           }
         });
         
-        const data = await directResponse.json().catch(() => ({}));
+        let data;
+        try {
+          data = await directResponse.json();
+        } catch (jsonError) {
+          console.warn('Response was not JSON:', jsonError);
+          data = { status: directResponse.status, statusText: directResponse.statusText, isJson: false };
+        }
         
         if (!directResponse.ok) {
-          throw new Error(data.detail || `Direct request failed with status ${directResponse.status}`);
+          throw new Error(data.detail || `Request failed with status ${directResponse.status}: ${directResponse.statusText}`);
         }
         
         return data;
       } catch (directError) {
-        console.error('Direct API request also failed:', directError);
+        console.error('Fallback API request also failed:', directError);
         throw directError;
       }
     }
