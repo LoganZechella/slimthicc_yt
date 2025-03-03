@@ -180,36 +180,40 @@ app.add_middleware(
 # Also add a raw middleware for handling CORS as a fallback
 @app.middleware("http")
 async def cors_middleware(request: Request, call_next):
-    # Get the origin from the request
-    origin = request.headers.get("origin", "")
+    """CORS middleware handling."""
+    # For OPTIONS requests, return a simple response right away
+    if request.method == "OPTIONS":
+        origin = request.headers.get("origin", "*")
+        
+        response = Response(
+            content="",
+            status_code=200,
+            headers={
+                "Access-Control-Allow-Origin": origin,
+                "Access-Control-Allow-Credentials": "true",
+                "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS, PATCH",
+                "Access-Control-Allow-Headers": "*",
+                "Access-Control-Max-Age": "86400",
+                "Content-Type": "text/plain",
+                "Content-Length": "0"
+            }
+        )
+        logger.info(f"CORS headers set for OPTIONS request from {origin}: {dict(response.headers)}")
+        return response
     
-    # If this is a WebSocket upgrade request, bypass CORS checks
+    # For WebSocket upgrade requests, pass through without modification
     if request.headers.get("upgrade", "").lower() == "websocket":
+        logger.info(f"WebSocket connection request for task {request.path_params.get('task_id')} from {request.client.host}")
         return await call_next(request)
     
-    # Handle OPTIONS requests immediately
-    if request.method == "OPTIONS":
-        headers = {
-            "Access-Control-Allow-Origin": netlify_domain if origin == netlify_domain else "*",
-            "Access-Control-Allow-Credentials": "true",
-            "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS, PATCH",
-            "Access-Control-Allow-Headers": "*",
-            "Access-Control-Max-Age": "86400",
-            "Content-Type": "text/plain",
-            "Content-Length": "0"
-        }
-        logger.info(f"CORS headers set for OPTIONS request from {origin}: {headers}")
-        return Response(status_code=200, headers=headers)
-    
-    # Process non-OPTIONS requests
+    # For regular requests
     response = await call_next(request)
     
-    # Add CORS headers to all responses based on the origin
-    response.headers["Access-Control-Allow-Origin"] = netlify_domain if origin == netlify_domain else "*"
-    response.headers["Access-Control-Allow-Credentials"] = "true"
-    response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, OPTIONS, PATCH"
-    response.headers["Access-Control-Allow-Headers"] = "*"
-    response.headers["Access-Control-Max-Age"] = "86400"
+    # Set CORS headers
+    origin = request.headers.get("origin", "*")
+    if origin:
+        response.headers["Access-Control-Allow-Origin"] = origin
+        response.headers["Access-Control-Allow-Credentials"] = "true"
     
     return response
 
@@ -226,131 +230,25 @@ async def global_exception_handler(request: Request, exc: Exception):
 # Root-level WebSocket catch-all
 @app.websocket("/api/v1/downloads/{task_id}/ws")
 async def websocket_endpoint(websocket: WebSocket, task_id: str):
-    """
-    WebSocket endpoint for real-time task updates
-    
-    Args:
-        websocket: The WebSocket connection
-        task_id: The task ID to subscribe to
-    """
-    client_host = getattr(websocket.client, 'host', 'unknown')
-    logger.info(f"WebSocket connection request for task {task_id} from {client_host}")
-    
+    """WebSocket endpoint for real-time task updates."""
     try:
-        # Accept the connection first
+        logger.info(f"WebSocket connection request for task {task_id} from {websocket.client.host}")
+        
+        # Accept the connection (note: download_router.main_websocket_endpoint will also call connect)
+        # This ensures the connection is properly handled even if routing fails
         await websocket.accept()
         logger.info(f"WebSocket connection accepted for task {task_id}")
         
-        # Register with websocket_manager after accepting
-        connection_accepted = await websocket_manager.connect(websocket, task_id)
-        if not connection_accepted:
-            logger.error(f"Failed to register WebSocket connection for task {task_id}")
-            await websocket.close(code=1011, reason="Failed to establish connection")
-            return
-            
-        logger.info(f"WebSocket connection established and registered for task {task_id}")
-        
-        # Send initial connection status
-        await websocket.send_json({
-            "type": "connection_status",
-            "status": "connected",
-            "task_id": task_id,
-            "timestamp": time.time()
-        })
-        
-        # Keep the connection alive and handle messages
-        ping_interval = 15  # Send ping every 15 seconds
-        last_ping = time.time()
-        
-        while True:
-            try:
-                # Use a shorter timeout to allow for regular pings
-                current_time = time.time()
-                if current_time - last_ping >= ping_interval:
-                    await websocket.send_json({
-                        "type": "ping",
-                        "timestamp": current_time
-                    })
-                    last_ping = current_time
-                    # Also send current task status after ping
-                    await _send_task_status_update(task_id, websocket)
-                
-                # Wait for messages with a timeout shorter than the ping interval
-                try:
-                    data = await asyncio.wait_for(websocket.receive_text(), timeout=5.0)
-                    
-                    try:
-                        message = json.loads(data)
-                        logger.debug(f"Received message from client for task {task_id}: {message}")
-                        
-                        # Handle ping messages
-                        if message.get("type") == "ping":
-                            await websocket.send_json({
-                                "type": "pong",
-                                "timestamp": message.get("timestamp"),
-                                "server_timestamp": time.time()
-                            })
-                            continue
-                        
-                        # Handle hello messages
-                        if message.get("type") == "hello":
-                            logger.info(f"Received hello message from client for task {task_id}")
-                            await websocket.send_json({
-                                "type": "hello_ack",
-                                "task_id": task_id,
-                                "timestamp": time.time(),
-                                "message": "Hello received, connection confirmed"
-                            })
-                            
-                            # Ensure connection is marked as active
-                            async with websocket_manager.connection_lock:
-                                if task_id in websocket_manager.active_connections:
-                                    if websocket not in websocket_manager.active_connections[task_id]:
-                                        websocket_manager.active_connections[task_id].append(websocket)
-                                        websocket_manager.connection_timestamps[task_id][websocket] = time.time()
-                                        logger.info(f"Re-registered connection for task {task_id} after hello message")
-                            
-                            # Send current task status
-                            await _send_task_status_update(task_id, websocket)
-                            continue
-                        
-                        # Send task status for any other message type
-                        await _send_task_status_update(task_id, websocket)
-                        
-                    except json.JSONDecodeError:
-                        logger.warning(f"Received invalid JSON from client for task {task_id}: {data}")
-                    except Exception as msg_error:
-                        logger.error(f"Error processing message for task {task_id}: {msg_error}", exc_info=True)
-                        
-                except asyncio.TimeoutError:
-                    # This is expected - we use the timeout to send regular pings
-                    continue
-                    
-            except WebSocketDisconnect as disconnect_error:
-                logger.info(f"Client disconnected for task {task_id}: {disconnect_error}")
-                # Attempt to reconnect
-                try:
-                    await websocket_manager.disconnect(websocket, task_id)
-                    logger.info(f"Cleaned up disconnected WebSocket for task {task_id}")
-                    # Wait briefly before allowing reconnection
-                    await asyncio.sleep(1)
-                    return
-                except Exception as cleanup_error:
-                    logger.error(f"Error cleaning up disconnected WebSocket: {cleanup_error}")
-                break
-            except Exception as e:
-                logger.error(f"Error in WebSocket connection for task {task_id}: {e}", exc_info=True)
-                break
-                
+        # Forward to the router's endpoint (which also handles connection)
+        await downloads_router.main_websocket_endpoint(websocket, task_id)
+    except WebSocketDisconnect:
+        logger.info(f"WebSocket disconnected for task {task_id}")
     except Exception as e:
-        logger.error(f"Error in WebSocket connection for task {task_id}: {e}", exc_info=True)
-    finally:
-        # Clean up the connection
+        logger.error(f"Error in WebSocket endpoint for task {task_id}: {e}", exc_info=True)
         try:
             await websocket_manager.disconnect(websocket, task_id)
-            logger.info(f"WebSocket connection closed and cleaned up for task {task_id}")
-        except Exception as cleanup_error:
-            logger.error(f"Error during connection cleanup for task {task_id}: {cleanup_error}")
+        except Exception:
+            pass
 
 # Root-level WebSocket catch-all with alternative pattern
 @app.websocket("/{path:path}")

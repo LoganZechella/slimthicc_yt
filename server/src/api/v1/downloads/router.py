@@ -198,194 +198,114 @@ async def cancel_download(task_id: str):
 
 @router.get("/{task_id}/file")
 async def download_file(task_id: str, background_tasks: BackgroundTasks):
-    """Download the completed file."""
+    """Download a file for a specific task."""
     try:
-        logger.info(f"Processing download file request for task {task_id}")
-        
-        # Get the task from the database
+        logger.info(f"Download file request for task: {task_id}")
         task = await download_task_manager.get_task(task_id)
+        
         if not task:
-            logger.error(f"Task {task_id} not found")
+            logger.error(f"Task not found: {task_id}")
             raise HTTPException(status_code=404, detail="Task not found")
-            
+        
         if task.status != DownloadStatus.COMPLETE:
-            logger.warning(f"Task {task_id} is not complete (status={task.status})")
-            raise HTTPException(status_code=400, detail="Download not complete")
+            logger.error(f"Task not ready for download: {task_id} (status: {task.status})")
+            raise HTTPException(status_code=400, detail=f"Task not ready for download (status: {task.status})")
         
-        # Get the downloads directory
-        downloads_dir = Path("server/downloads")
+        logger.info(f"Processing download for task: {task_id}, reported path: {task.output_path}")
         
-        # Check if it's a Spotify playlist
-        is_spotify_task = False
-        if hasattr(task, 'url') and task.url:
-            is_spotify_task = 'spotify.com' in task.url or 'spotify:' in task.url
-        
-        logger.info(f"Processing download file request for task {task_id} (is_spotify_task: {is_spotify_task})")
-        
-        # Handle Spotify playlist (multiple files)
-        if is_spotify_task:
-            # Find the directory for this specific task
-            spotify_dir = None
-            task_dirs = list(downloads_dir.glob(f"*{task_id}*"))
-            if task_dirs:
-                for dir_path in task_dirs:
-                    if dir_path.is_dir():
-                        spotify_dir = dir_path
-                        break
-            
-            if not spotify_dir:
-                # Try to find a directory with "spotify" in the name
-                spotify_dirs = list(downloads_dir.glob("*spotify*"))
-                for dir_path in spotify_dirs:
-                    if dir_path.is_dir() and task_id in dir_path.name:
-                        spotify_dir = dir_path
-                        break
-            
-            # If still no directory found, check recent directories
-            if not spotify_dir and hasattr(task, 'created_at'):
-                all_dirs = [d for d in downloads_dir.glob("*") if d.is_dir()]
-                if all_dirs:
-                    # Sort by modification time (newest first)
-                    all_dirs.sort(key=lambda p: p.stat().st_mtime, reverse=True)
-                    task_created_time = task.created_at.timestamp()
-                    
-                    # Find directories created after task was created
-                    for dir_path in all_dirs:
-                        if dir_path.stat().st_mtime > task_created_time:
-                            spotify_dir = dir_path
-                            break
-            
-            if spotify_dir:
-                logger.info(f"Found Spotify directory: {spotify_dir}")
-                # Find all mp3 files in the directory
-                mp3_files = list(spotify_dir.glob("*.mp3"))
-                
-                if mp3_files:
-                    # Create a unique ZIP filename
-                    playlist_name = task.title if hasattr(task, 'title') and task.title else "playlist"
-                    if "Spotify Playlist:" in playlist_name:
-                        playlist_name = playlist_name.replace("Spotify Playlist:", "").strip()
-                    
-                    # Create a safe filename
-                    zip_filename = f"spotify_playlist_{playlist_name}_{task_id}.zip"
-                    safe_filename = re.sub(r'[^\w\-\.]', '_', zip_filename)
-                    zip_path = spotify_dir / safe_filename
-                    
-                    try:
-                        # Create the ZIP file
-                        with zipfile.ZipFile(str(zip_path), 'w', zipfile.ZIP_DEFLATED) as zip_file:
-                            for mp3_path in mp3_files:
-                                zip_file.write(mp3_path, arcname=mp3_path.name)
-                        
-                        # Get the file size for Content-Length header
-                        file_size = zip_path.stat().st_size
-                        
-                        # Set headers explicitly
-                        headers = {
-                            "Content-Type": "application/zip",
-                            "Content-Length": str(file_size),
-                            "Content-Disposition": f'attachment; filename="{safe_filename}"'
-                        }
-                        
-                        # Register background task to clean up the files
-                        background_tasks.add_task(cleanup_after_download, str(zip_path), [str(f) for f in mp3_files])
-                        
-                        logger.info(f"Returning ZIP file: {zip_path} with size {file_size} bytes")
-                        
-                        # Return the ZIP file
-                        return FileResponse(
-                            path=str(zip_path),
-                            filename=safe_filename,
-                            media_type="application/zip",
-                            headers=headers
-                        )
-                        
-                    except Exception as zip_error:
-                        logger.error(f"Error creating ZIP file: {zip_error}", exc_info=True)
-                        raise HTTPException(status_code=500, detail="Failed to create ZIP file")
-                else:
-                    logger.error(f"No MP3 files found in Spotify directory: {spotify_dir}")
-                    raise HTTPException(status_code=404, detail="No MP3 files found for download")
+        # Fix for Spotify playlists which may specify a path in /app/downloads
+        # Check if this is a Spotify task with a special directory format
+        if hasattr(task, 'spotify_output_dir') and task.spotify_output_dir:
+            # Convert Docker path to Render path
+            logger.info(f"Found Spotify task with output dir: {task.spotify_output_dir}")
+            docker_path = task.spotify_output_dir
+            if docker_path.startswith('/app/'):
+                # Convert Docker path to Render path
+                file_path = Path(docker_path.replace('/app/', '/opt/render/project/src/server/'))
+                logger.info(f"Converted Docker path {docker_path} to Render path {file_path}")
             else:
-                logger.error(f"No Spotify directory found for task {task_id}")
-                raise HTTPException(status_code=404, detail="Download directory not found")
-        
-        # Handle single file download
-        file_path = None
-        
-        # First, check if the task has an output_path
-        if task.output_path:
-            file_path = task.output_path
-            # Normalize the path if it's using Docker paths
-            if file_path.startswith('/app/'):
-                file_path = file_path.replace('/app/downloads/', 'server/downloads/')
+                file_path = Path(docker_path)
             
-            # Check if the file exists
-            if not Path(file_path).exists():
-                # Try to find the file in the downloads directory
-                filename = os.path.basename(file_path)
-                potential_files = list(downloads_dir.glob(f"*{filename}*"))
-                if potential_files:
-                    file_path = str(potential_files[0])
+            # If it's a directory, we need to create a ZIP of all files
+            if file_path.is_dir():
+                logger.info(f"Found Spotify playlist directory: {file_path}")
+                # Get all MP3 files in the directory
+                mp3_files = list(file_path.glob("*.mp3"))
+                logger.info(f"Found {len(mp3_files)} MP3 files in directory")
+                
+                if not mp3_files:
+                    logger.error(f"No MP3 files found in Spotify output directory: {file_path}")
+                    raise HTTPException(status_code=404, detail="No MP3 files found")
+                
+                # If only one file, return it directly
+                if len(mp3_files) == 1:
+                    file_path = mp3_files[0]
+                    logger.info(f"Only one MP3 file found, returning it directly: {file_path}")
                 else:
-                    # Look for any file with the task ID in the name
-                    potential_files = list(downloads_dir.glob(f"*{task_id}*.*"))
-                    if potential_files:
-                        file_path = str(potential_files[0])
-                    else:
-                        logger.error(f"File not found: {file_path}")
-                        raise HTTPException(status_code=404, detail="File not found")
+                    # Create a ZIP file for multiple files
+                    zip_path = Path(f"/opt/render/project/src/server/downloads/{task_id}_playlist.zip")
+                    logger.info(f"Creating ZIP file for multiple MP3 files: {zip_path}")
+                    
+                    # Create a ZIP file containing all MP3 files
+                    with zipfile.ZipFile(zip_path, 'w') as zipf:
+                        for mp3_file in mp3_files:
+                            zipf.write(mp3_file, arcname=mp3_file.name)
+                    
+                    file_path = zip_path
+                    logger.info(f"ZIP file created: {file_path}")
+                    
+                    # Add cleanup task for the ZIP file
+                    background_tasks.add_task(cleanup_after_download, str(zip_path), [str(zip_path)])
+            
+        # For standard downloads with output_path specified
+        elif task.output_path:
+            # Check different path variants
+            possible_paths = [
+                Path(task.output_path),  # Try the exact path
+                Path(f"/opt/render/project/src/server/downloads/{task_id}.mp3"),  # Render MP3
+                Path(f"/opt/render/project/src/server/downloads/{task_id}.m4a"),  # Render M4A
+                Path(f"/opt/render/project/src/server/downloads/{task_id}.zip")   # Render ZIP
+            ]
+            
+            # Find the first existing path
+            file_path = None
+            for path in possible_paths:
+                if path.exists() and path.is_file() and path.stat().st_size > 0:
+                    file_path = path
+                    logger.info(f"Found existing file at: {file_path}")
+                    break
+            
+            if not file_path:
+                logger.error(f"File not found for task {task_id}. Tried paths: {possible_paths}")
+                raise HTTPException(status_code=404, detail="File not found")
         else:
-            # Try to find a file with the task ID in the name
-            potential_files = list(downloads_dir.glob(f"*{task_id}*.*"))
-            if potential_files:
-                file_path = str(potential_files[0])
-            else:
-                # Look for recent files
-                all_files = list(downloads_dir.glob("*.mp3")) + list(downloads_dir.glob("*.m4a")) + list(downloads_dir.glob("*.zip"))
-                if all_files and hasattr(task, 'created_at'):
-                    # Sort by modification time (newest first)
-                    all_files.sort(key=lambda p: p.stat().st_mtime, reverse=True)
-                    task_created_time = task.created_at.timestamp()
-                    
-                    # Find files created after task was created
-                    for file_path in all_files:
-                        if file_path.stat().st_mtime > task_created_time:
-                            file_path = str(file_path)
-                            break
-                
-                if not file_path:
-                    logger.error(f"No file found for task {task_id}")
-                    raise HTTPException(status_code=404, detail="File not found")
+            logger.error(f"No output path specified for task {task_id}")
+            raise HTTPException(status_code=400, detail="No output path specified")
         
-        # At this point, we should have a valid file_path
-        file_path_obj = Path(file_path)
-        if not file_path_obj.exists():
-            logger.error(f"File not found at: {file_path}")
-            raise HTTPException(status_code=404, detail="File not found")
+        # Extract file info
+        filename = file_path.name
+        file_stats = file_path.stat()
         
-        # Get file info for headers
-        file_stats = file_path_obj.stat()
-        filename = file_path_obj.name
+        # Determine media type based on extension
+        extension = file_path.suffix.lower()
+        if extension == '.mp3':
+            media_type = 'audio/mpeg'
+        elif extension == '.m4a':
+            media_type = 'audio/mp4'
+        elif extension == '.zip':
+            media_type = 'application/zip'
+        elif extension == '.flac':
+            media_type = 'audio/flac'
+        elif extension == '.wav':
+            media_type = 'audio/wav'
+        else:
+            media_type = 'application/octet-stream'
         
-        # Determine media type based on file extension
-        media_type = "application/octet-stream"  # Default
-        if filename.lower().endswith(".mp3"):
-            media_type = "audio/mpeg"
-        elif filename.lower().endswith(".m4a"):
-            media_type = "audio/m4a"
-        elif filename.lower().endswith(".zip"):
-            media_type = "application/zip"
-        elif filename.lower().endswith(".flac"):
-            media_type = "audio/flac"
-        elif filename.lower().endswith(".wav"):
-            media_type = "audio/wav"
-        
-        # Set headers explicitly to ensure Content-Length is correct
+        # Set response headers
         headers = {
-            "Content-Type": media_type,
-            "Content-Length": str(file_stats.st_size),
-            "Content-Disposition": f'attachment; filename="{filename}"'
+            'Content-Length': str(file_stats.st_size),
+            'Content-Type': media_type,
+            'Content-Disposition': f'attachment; filename="{filename}"'
         }
         
         # Update the task with the correct path if needed
@@ -422,66 +342,79 @@ async def main_websocket_endpoint(websocket: WebSocket, task_id: str):
         
         # Accept the connection
         await websocket_manager.connect(websocket, task_id)
-        logger.info(f"WebSocket connection accepted for task {task_id}")
+        logger.info(f"WebSocket connection established and registered for task {task_id}")
         
         # Send initial status
         task = await download_task_manager.get_task(task_id)
         if task:
             initial_status = {
-                "id": task.id,
+                "type": "status",
+                "task_id": task_id,
                 "status": task.status,
                 "progress": task.progress,
                 "title": task.title,
-                "author": task.author,
-                "error": task.error
+                "error": task.error,
+                "timestamp": time.time()
             }
-            await websocket.send_json(initial_status)
-            logger.info(f"Sent initial status for task {task_id}: {task.status}, progress: {task.progress}")
-        else:
-            logger.warning(f"Task {task_id} not found when sending initial status")
-            await websocket.send_json({"error": f"Task {task_id} not found"})
+            try:
+                await websocket.send_json(initial_status)
+                logger.info(f"Sent initial status for task {task_id}")
+            except Exception as e:
+                logger.error(f"Error sending initial status for task {task_id}: {e}")
         
-        # Keep the connection open and handle client messages
-        try:
-            while True:
-                # Wait for any message from the client (ping/keepalive)
-                data = await websocket.receive_text()
-                logger.debug(f"Received message from client {task_id}: {data}")
+        # Handle messages from client
+        while True:
+            try:
+                # Wait for a message with a timeout
+                message_json = await asyncio.wait_for(websocket.receive_json(), timeout=60)
                 
-                # Send current status on any client message
-                task = await download_task_manager.get_task(task_id)
-                if task:
-                    status_update = {
-                        "id": task.id,
-                        "status": task.status,
-                        "progress": task.progress,
-                        "title": task.title,
-                        "author": task.author,
-                        "error": task.error
-                    }
-                    await websocket.send_json(status_update)
-                    logger.debug(f"Sent status update for task {task_id}: {task.status}, progress: {task.progress}")
-                else:
-                    logger.warning(f"Task {task_id} not found when sending status update")
-                    await websocket.send_json({"error": f"Task {task_id} not found"})
+                # Handle client message - usually "hello" or heartbeat
+                msg_type = message_json.get("type", "unknown")
+                logger.info(f"Received {msg_type} message from client for task {task_id}")
                 
-        except WebSocketDisconnect:
-            logger.info(f"WebSocket disconnected for task {task_id}")
-        except Exception as ws_error:
-            logger.error(f"Error in WebSocket communication for task {task_id}: {ws_error}", exc_info=True)
-        finally:
-            # Clean up the connection
-            await websocket_manager.disconnect(websocket, task_id)
-            logger.info(f"WebSocket connection closed for task {task_id}")
-            
+                # Send acknowledgment
+                if msg_type == "hello":
+                    await websocket.send_json({
+                        "type": "welcome",
+                        "task_id": task_id,
+                        "timestamp": time.time()
+                    })
+                    logger.debug(f"Sent welcome response to client for task {task_id}")
+                
+                # Other message types can be handled here
+                
+            except asyncio.TimeoutError:
+                # Check if connection is still valid
+                if websocket.client_state.name.lower() != "connected":
+                    logger.warning(f"WebSocket connection for task {task_id} is no longer connected, exiting loop")
+                    break
+                
+                # Connection still valid, just a timeout with no messages
+                logger.debug(f"No messages received from client for task {task_id} in 60s, continuing to listen")
+                continue
+                
+            except WebSocketDisconnect:
+                logger.info(f"WebSocket disconnected for task {task_id}")
+                await websocket_manager.disconnect(websocket, task_id)
+                break
+                
+            except Exception as e:
+                logger.error(f"Error processing WebSocket message for task {task_id}: {e}")
+                # Try to continue if possible
+                if websocket.client_state.name.lower() != "connected":
+                    logger.warning(f"WebSocket connection for task {task_id} is no longer connected after error")
+                    break
+    
+    except WebSocketDisconnect:
+        logger.info(f"WebSocket disconnected during setup for task {task_id}")
+        await websocket_manager.disconnect(websocket, task_id)
+        
     except Exception as e:
-        logger.error(f"Error in WebSocket connection setup for task {task_id}: {e}", exc_info=True)
-        # Ensure connection is closed on error
+        logger.error(f"Error in WebSocket endpoint for task {task_id}: {e}", exc_info=True)
         try:
             await websocket_manager.disconnect(websocket, task_id)
-            logger.info(f"WebSocket connection force closed after error for task {task_id}")
-        except Exception as disconnect_error:
-            logger.error(f"Error disconnecting WebSocket for task {task_id}: {disconnect_error}")
+        except Exception:
+            pass
 
 @router.websocket("/ws/{task_id}")
 async def alt_websocket_endpoint(websocket: WebSocket, task_id: str):

@@ -19,6 +19,9 @@ class WebsocketManager:
         self.logger = logging.getLogger("services.websocket_manager")
         self.ping_interval = 30  # seconds
         self.ping_task = None
+        self.total_connections = 0
+        self.ping_timeout = 10  # seconds
+        self.ping_service_running = False
         logger.info("Initialized WebSocket manager with improved resilience")
     
     async def connect(self, websocket: WebSocket, client_id: str) -> bool:
@@ -33,31 +36,41 @@ class WebsocketManager:
             bool: True if connection successfully registered, False otherwise
         """
         try:
-            async with self.connection_lock:
-                # Initialize if this is the first connection for this client
-                if client_id not in self.active_connections:
-                    self.active_connections[client_id] = []
-                    self.connection_timestamps[client_id] = {}
-                
-                # Add the connection to the client's list if not already present
-                if websocket not in self.active_connections[client_id]:
-                    self.active_connections[client_id].append(websocket)
-                    self.connection_timestamps[client_id][websocket] = time.time()
+            # Accept the connection
+            await websocket.accept()
+            logger.info(f"WebSocket connected: {client_id} (total connections: {self.total_connections + 1})")
+            
+            # Initialize client connections list if not exists
+            if client_id not in self.active_connections:
+                self.active_connections[client_id] = []
+            
+            # Track connection with timestamp
+            self.active_connections[client_id].append(websocket)
+            
+            # Initialize timestamp tracking for this client
+            if client_id not in self.connection_timestamps:
+                self.connection_timestamps[client_id] = {}
+            
+            # Set initial timestamp for this connection
+            self.connection_timestamps[client_id][websocket] = time.time()
             
             # Start the ping service if not already running
-            if self.service_task is None or self.service_task.done():
-                self.service_task = asyncio.create_task(self._ping_service())
-                self.logger.info("Starting WebSocket ping service")
+            if not self.ping_service_running:
+                asyncio.create_task(self._ping_service())
+                logger.info(f"Starting ping service with {self.ping_interval}s interval")
+                self.ping_service_running = True
             
-            # Log connection info
-            total_connections = sum(len(connections) for connections in self.active_connections.values())
-            self.logger.info(f"WebSocket connected: {client_id} (total connections: {total_connections})")
-            self.logger.info(f"Active clients: {list(self.active_connections.keys())}")
-            self.logger.info(f"Total active connections: {total_connections}")
+            # Log active clients for debugging
+            client_ids = list(self.active_connections.keys())
+            logger.info(f"Active clients: {client_ids}")
+            
+            # Log total connections
+            self.total_connections += 1
+            logger.info(f"Total active connections: {self.total_connections}")
             
             return True
         except Exception as e:
-            self.logger.error(f"Error connecting WebSocket for client {client_id}: {e}", exc_info=True)
+            logger.error(f"Error connecting WebSocket for client {client_id}: {e}", exc_info=True)
             return False
     
     async def disconnect(self, websocket: WebSocket, client_id: str) -> bool:
@@ -110,43 +123,65 @@ class WebsocketManager:
             client_id: The client's unique identifier
             message: The message to broadcast
         """
-        disconnected_websockets = []
-        
-        async with self.connection_lock:
-            # Check if there are active connections for this client
-            if client_id not in self.active_connections or not self.active_connections[client_id]:
-                self.logger.warning(f"No active connections for client {client_id} - broadcast will be skipped")
-                return
+        try:
+            if client_id in self.active_connections:
+                connections = self.active_connections[client_id]
                 
-            # Broadcast the message to all active connections
-            for websocket in self.active_connections[client_id]:
-                try:
-                    # Add broadcast timestamp for debugging latency
-                    message_with_timestamp = {
-                        **message,
-                        "server_broadcast_timestamp": time.time()
-                    }
-                    await websocket.send_json(message_with_timestamp)
-                except Exception as e:
-                    self.logger.error(f"Error broadcasting to WebSocket: {e}")
-                    disconnected_websockets.append(websocket)
-        
-        # Remove any disconnected websockets
-        if disconnected_websockets:
-            async with self.connection_lock:
-                if client_id in self.active_connections:
-                    for websocket in disconnected_websockets:
-                        if websocket in self.active_connections[client_id]:
-                            self.active_connections[client_id].remove(websocket)
-                            if websocket in self.connection_timestamps[client_id]:
-                                del self.connection_timestamps[client_id][websocket]
-                            self.logger.warning(f"Removed disconnected WebSocket for client {client_id}")
+                if not connections:
+                    logger.warning(f"No active connections for client {client_id} - broadcast will be skipped")
+                    return False
+                
+                connection_count = len(connections)
+                logger.debug(f"Broadcasting to {connection_count} connections for client {client_id}")
+                
+                # Track problematic connections to remove
+                problematic_connections = []
+                
+                # Loop through connections and send message
+                for connection in connections:
+                    try:
+                        # Check if connection is still open
+                        if connection.client_state.name.lower() != "connected":
+                            logger.warning(f"Connection for {client_id} is not in connected state ({connection.client_state.name})")
+                            problematic_connections.append(connection)
+                            continue
+                        
+                        # Send message
+                        await connection.send_json(message)
+                        
+                        # Update last activity timestamp
+                        if client_id in self.connection_timestamps:
+                            self.connection_timestamps[client_id][connection] = time.time()
+                    except Exception as e:
+                        logger.error(f"Error sending to specific connection for {client_id}: {e}")
+                        problematic_connections.append(connection)
+                
+                # Remove problematic connections
+                if problematic_connections:
+                    for prob_conn in problematic_connections:
+                        if client_id in self.active_connections and prob_conn in self.active_connections[client_id]:
+                            self.active_connections[client_id].remove(prob_conn)
+                            self.total_connections -= 1
+                            
+                            if client_id in self.connection_timestamps and prob_conn in self.connection_timestamps[client_id]:
+                                del self.connection_timestamps[client_id][prob_conn]
+                            logger.info(f"Removed problematic connection for {client_id}")
                     
-                    # If this was the last connection for this client, remove the client
-                    if not self.active_connections[client_id]:
+                    # Clean up empty client entries
+                    if client_id in self.active_connections and not self.active_connections[client_id]:
                         del self.active_connections[client_id]
-                        del self.connection_timestamps[client_id]
-                        self.logger.info(f"Removed empty client entry for {client_id} after failed broadcast")
+                        if client_id in self.connection_timestamps:
+                            del self.connection_timestamps[client_id]
+                        logger.info(f"Removed empty client entry for {client_id}")
+                
+                # Return success if at least one message was sent
+                return len(problematic_connections) < connection_count
+            else:
+                logger.warning(f"No active connections for client {client_id} - broadcast will be skipped")
+                return False
+        except Exception as e:
+            logger.error(f"Error in broadcast for client {client_id}: {e}", exc_info=True)
+            return False
     
     async def broadcast_progress(self, task_id: str, progress: float, status: str, details: Optional[Any] = None, error: Optional[str] = None):
         """
@@ -237,67 +272,102 @@ class WebsocketManager:
             return False
     
     async def _ping_service(self):
-        """Background service to ping all connections periodically to keep them alive"""
+        """Send periodic pings to keep WebSocket connections alive."""
         try:
-            ping_interval = 10  # seconds
-            self.logger.info(f"Starting ping service with {ping_interval}s interval")
+            self.ping_service_running = True
+            logger.info("Starting WebSocket ping service")
             
             while True:
-                await asyncio.sleep(ping_interval)
-                
-                # Make a copy of active_connections to avoid modification during iteration
-                async with self.connection_lock:
-                    clients_to_ping = {
-                        client_id: list(connections) 
-                        for client_id, connections in self.active_connections.items()
-                    }
-                
-                # Track websockets that failed to respond to ping
-                disconnected_websockets = {}
-                
-                # Send ping to all active connections
-                for client_id, websockets in clients_to_ping.items():
-                    for websocket in websockets:
-                        try:
-                            ping_message = {
-                                "type": "ping",
-                                "timestamp": time.time()
-                            }
-                            await websocket.send_json(ping_message)
-                        except Exception as e:
-                            if client_id not in disconnected_websockets:
-                                disconnected_websockets[client_id] = []
-                            disconnected_websockets[client_id].append(websocket)
-                            self.logger.warning(f"Ping failed for client {client_id}: {e}")
-                
-                # Clean up disconnected websockets
-                if disconnected_websockets:
-                    async with self.connection_lock:
-                        for client_id, websockets in disconnected_websockets.items():
-                            if client_id in self.active_connections:
-                                for websocket in websockets:
-                                    if websocket in self.active_connections[client_id]:
-                                        self.active_connections[client_id].remove(websocket)
-                                        if websocket in self.connection_timestamps[client_id]:
-                                            del self.connection_timestamps[client_id][websocket]
-                                        self.logger.warning(f"Removed disconnected WebSocket for client {client_id} after ping failure")
-                                
-                                # If this was the last connection for this client, remove the client
-                                if not self.active_connections[client_id]:
-                                    del self.active_connections[client_id]
-                                    del self.connection_timestamps[client_id]
-                                    self.logger.info(f"Removed empty client entry for {client_id} after ping failures")
-                
-                # If no connections left, stop the service
-                async with self.connection_lock:
-                    if not self.active_connections:
-                        self.logger.info("No active connections remaining, stopping ping service")
-                        break
+                try:
+                    # Wait for the ping interval
+                    await asyncio.sleep(self.ping_interval)
+                    
+                    # Current time for checking connection age
+                    current_time = time.time()
+                    
+                    # Track clients with no active connections
+                    empty_clients = []
+                    
+                    # Send ping to all connected clients
+                    for client_id, connections in list(self.active_connections.items()):
+                        if not connections:
+                            empty_clients.append(client_id)
+                            continue
                         
-        except asyncio.CancelledError:
-            self.logger.info("Ping service cancelled")
+                        # Problematic connections that need removal
+                        problematic_connections = []
+                        
+                        # Track if any ping was sent successfully
+                        ping_success = False
+                        
+                        # Send ping to each connection
+                        for connection in connections:
+                            try:
+                                # Check if connection is already closed
+                                if connection.client_state.name.lower() != "connected":
+                                    logger.warning(f"Found closed connection for {client_id} ({connection.client_state.name})")
+                                    problematic_connections.append(connection)
+                                    continue
+                                
+                                # Check connection age
+                                if client_id in self.connection_timestamps and connection in self.connection_timestamps[client_id]:
+                                    last_time = self.connection_timestamps[client_id][connection]
+                                    if current_time - last_time > self.ping_timeout:
+                                        logger.warning(f"Connection for {client_id} timed out (no activity for {current_time - last_time:.1f}s)")
+                                        problematic_connections.append(connection)
+                                        continue
+                                
+                                # Send ping message
+                                ping_message = {
+                                    "type": "ping", 
+                                    "timestamp": current_time,
+                                    "taskId": client_id
+                                }
+                                await connection.send_json(ping_message)
+                                
+                                # Update timestamp
+                                if client_id in self.connection_timestamps:
+                                    self.connection_timestamps[client_id][connection] = current_time
+                                
+                                ping_success = True
+                                logger.debug(f"Sent ping to client {client_id}")
+                            except Exception as e:
+                                logger.warning(f"Failed to ping connection for {client_id}: {e}")
+                                problematic_connections.append(connection)
+                        
+                        # Remove problematic connections
+                        if problematic_connections:
+                            for prob_conn in problematic_connections:
+                                if client_id in self.active_connections and prob_conn in self.active_connections[client_id]:
+                                    self.active_connections[client_id].remove(prob_conn)
+                                    self.total_connections -= 1
+                                    
+                                    if client_id in self.connection_timestamps and prob_conn in self.connection_timestamps[client_id]:
+                                        del self.connection_timestamps[client_id][prob_conn]
+                                    
+                                    logger.info(f"Removed problematic connection during ping for {client_id}")
+                            
+                            # If no connections successfully pinged, mark client for removal
+                            if not ping_success and client_id in self.active_connections and not self.active_connections[client_id]:
+                                empty_clients.append(client_id)
+                    
+                    # Remove empty clients
+                    for client_id in empty_clients:
+                        if client_id in self.active_connections:
+                            del self.active_connections[client_id]
+                        if client_id in self.connection_timestamps:
+                            del self.connection_timestamps[client_id]
+                        logger.info(f"Removed empty client {client_id} during ping cycle")
+                    
+                    logger.debug(f"Ping cycle completed, {len(self.active_connections)} active clients remaining")
+                    
+                except Exception as e:
+                    logger.error(f"Error in ping cycle: {e}", exc_info=True)
+                    # Continue the loop even if there's an error
+            
         except Exception as e:
-            self.logger.error(f"Unexpected error in ping service: {e}", exc_info=True)
+            logger.error(f"Ping service crashed: {e}", exc_info=True)
+            self.ping_service_running = False
 
 
 # Create a global instance
