@@ -1,14 +1,6 @@
 services:
   - type: web
-    name: slimthicc-yt-server
+    name: slimthicc_yt
     runtime: python
     buildCommand: cd server && pip install -r requirements.txt && bash setup.sh
     startCommand: cd server && gunicorn -k uvicorn.workers.UvicornWorker run:app --bind 0.0.0.0:$PORT
-    healthCheckPath: /health
-    envVars:
-      - key: PYTHON_VERSION
-        value: 3.12.1
-      - key: PATH_PREFIX
-        value: server
-      - key: PYTHONPATH
-        value: /opt/render/project/src 
