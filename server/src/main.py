@@ -259,68 +259,87 @@ async def websocket_endpoint(websocket: WebSocket, task_id: str):
         })
         
         # Keep the connection alive and handle messages
+        ping_interval = 15  # Send ping every 15 seconds
+        last_ping = time.time()
+        
         while True:
             try:
-                # Use a timeout for receive_text to prevent blocking indefinitely
-                data = await asyncio.wait_for(websocket.receive_text(), timeout=30.0)
-                
-                try:
-                    message = json.loads(data)
-                    logger.debug(f"Received message from client for task {task_id}: {message}")
-                    
-                    # Handle ping messages
-                    if message.get("type") == "ping":
-                        await websocket.send_json({
-                            "type": "pong",
-                            "timestamp": message.get("timestamp"),
-                            "server_timestamp": time.time()
-                        })
-                        continue
-                    
-                    # Handle hello messages
-                    if message.get("type") == "hello":
-                        logger.info(f"Received hello message from client for task {task_id}")
-                        await websocket.send_json({
-                            "type": "hello_ack",
-                            "task_id": task_id,
-                            "timestamp": time.time(),
-                            "message": "Hello received, connection confirmed"
-                        })
-                        
-                        # Ensure connection is marked as active
-                        async with websocket_manager.connection_lock:
-                            if task_id in websocket_manager.active_connections:
-                                if websocket not in websocket_manager.active_connections[task_id]:
-                                    websocket_manager.active_connections[task_id].append(websocket)
-                                    websocket_manager.connection_timestamps[task_id][websocket] = time.time()
-                                    logger.info(f"Re-registered connection for task {task_id} after hello message")
-                        
-                        # Send current task status
-                        await _send_task_status_update(task_id, websocket)
-                        continue
-                    
-                    # Send task status for any other message type
-                    await _send_task_status_update(task_id, websocket)
-                    
-                except json.JSONDecodeError:
-                    logger.warning(f"Received invalid JSON from client for task {task_id}: {data}")
-                except Exception as msg_error:
-                    logger.error(f"Error processing message for task {task_id}: {msg_error}", exc_info=True)
-                    
-            except asyncio.TimeoutError:
-                # Send a ping to keep the connection alive
-                try:
+                # Use a shorter timeout to allow for regular pings
+                current_time = time.time()
+                if current_time - last_ping >= ping_interval:
                     await websocket.send_json({
                         "type": "ping",
-                        "timestamp": time.time()
+                        "timestamp": current_time
                     })
-                    # Send current status after ping
+                    last_ping = current_time
+                    # Also send current task status after ping
                     await _send_task_status_update(task_id, websocket)
-                except Exception as ping_error:
-                    logger.error(f"Error sending ping for task {task_id}: {ping_error}")
-                    raise
-            except WebSocketDisconnect:
-                logger.info(f"Client disconnected for task {task_id}")
+                
+                # Wait for messages with a timeout shorter than the ping interval
+                try:
+                    data = await asyncio.wait_for(websocket.receive_text(), timeout=5.0)
+                    
+                    try:
+                        message = json.loads(data)
+                        logger.debug(f"Received message from client for task {task_id}: {message}")
+                        
+                        # Handle ping messages
+                        if message.get("type") == "ping":
+                            await websocket.send_json({
+                                "type": "pong",
+                                "timestamp": message.get("timestamp"),
+                                "server_timestamp": time.time()
+                            })
+                            continue
+                        
+                        # Handle hello messages
+                        if message.get("type") == "hello":
+                            logger.info(f"Received hello message from client for task {task_id}")
+                            await websocket.send_json({
+                                "type": "hello_ack",
+                                "task_id": task_id,
+                                "timestamp": time.time(),
+                                "message": "Hello received, connection confirmed"
+                            })
+                            
+                            # Ensure connection is marked as active
+                            async with websocket_manager.connection_lock:
+                                if task_id in websocket_manager.active_connections:
+                                    if websocket not in websocket_manager.active_connections[task_id]:
+                                        websocket_manager.active_connections[task_id].append(websocket)
+                                        websocket_manager.connection_timestamps[task_id][websocket] = time.time()
+                                        logger.info(f"Re-registered connection for task {task_id} after hello message")
+                            
+                            # Send current task status
+                            await _send_task_status_update(task_id, websocket)
+                            continue
+                        
+                        # Send task status for any other message type
+                        await _send_task_status_update(task_id, websocket)
+                        
+                    except json.JSONDecodeError:
+                        logger.warning(f"Received invalid JSON from client for task {task_id}: {data}")
+                    except Exception as msg_error:
+                        logger.error(f"Error processing message for task {task_id}: {msg_error}", exc_info=True)
+                        
+                except asyncio.TimeoutError:
+                    # This is expected - we use the timeout to send regular pings
+                    continue
+                    
+            except WebSocketDisconnect as disconnect_error:
+                logger.info(f"Client disconnected for task {task_id}: {disconnect_error}")
+                # Attempt to reconnect
+                try:
+                    await websocket_manager.disconnect(websocket, task_id)
+                    logger.info(f"Cleaned up disconnected WebSocket for task {task_id}")
+                    # Wait briefly before allowing reconnection
+                    await asyncio.sleep(1)
+                    return
+                except Exception as cleanup_error:
+                    logger.error(f"Error cleaning up disconnected WebSocket: {cleanup_error}")
+                break
+            except Exception as e:
+                logger.error(f"Error in WebSocket connection for task {task_id}: {e}", exc_info=True)
                 break
                 
     except Exception as e:

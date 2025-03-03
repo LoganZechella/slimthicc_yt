@@ -1,7 +1,7 @@
 import asyncio
 import logging
 from pathlib import Path
-from typing import Dict, Optional, AsyncGenerator
+from typing import Dict, Optional, AsyncGenerator, Union
 from src.models.download import DownloadTask, DownloadStatus, DownloadError
 from src.services.download_strategies.strategy_selector import StrategySelector
 from src.services.websocket_manager import websocket_manager
@@ -11,6 +11,7 @@ from datetime import datetime
 from uuid import uuid4
 import os
 import re
+import time
 
 logger = logging.getLogger(__name__)
 
@@ -113,31 +114,94 @@ class DownloadTaskManager:
             
         return None
         
-    async def update_task(self, task: DownloadTask, **updates) -> DownloadTask:
-        """Update task status and persist to database."""
+    async def update_task(self, task: Union[Dict, DownloadTask], **kwargs):
+        """
+        Update a task in the database and broadcast the update to connected clients
+        
+        Args:
+            task: The task to update
+            **kwargs: Task fields to update
+        
+        Returns:
+            The updated task
+        """
         try:
-            mongo_db = await ensure_connection()
+            task_id = task.id if isinstance(task, DownloadTask) else task.get("id") or task.get("task_id")
+            if not task_id:
+                logger.error("Cannot update task: No task ID provided")
+                return None
             
-            # Update task attributes
-            for key, value in updates.items():
-                setattr(task, key, value)
-            task.updated_at = datetime.utcnow()
+            # Log update operation
+            logger.info(f"Updating task {task_id} with {kwargs}")
+            
+            # Convert task to dict if it's a DownloadTask
+            task_dict = task.dict() if isinstance(task, DownloadTask) else task
+            
+            # Update the fields
+            for key, value in kwargs.items():
+                if key in task_dict:
+                    task_dict[key] = value
+            
+            # Set the updated_at field
+            task_dict["updated_at"] = datetime.now()
             
             # Update in database
-            await mongo_db.downloads.update_one(
-                {"id": task.id},
-                {"$set": task.model_dump()}
+            mongo_db = await ensure_connection()
+            result = await mongo_db.downloads.update_one(
+                {"id": task_id},
+                {"$set": task_dict}
             )
             
-            # Update in memory if active
-            if task.id in self.active_downloads:
-                self.active_downloads[task.id] = task
+            if result.modified_count > 0:
+                logger.info(f"Task {task_id} updated successfully")
                 
-            return task
-            
+                # Get updated task
+                updated_task = await self.get_task(task_id)
+                
+                # Broadcast update to all connected clients
+                status = task_dict.get("status", getattr(task, "status", None))
+                progress = task_dict.get("progress", getattr(task, "progress", None))
+                error = task_dict.get("error", getattr(task, "error", None))
+                
+                # Make sure to explicitly log task status
+                logger.info(f"Task {task_id} status updated to {status}")
+                
+                # Broadcast the update with high-level details for WebSocket clients
+                if updated_task:
+                    # Add more context to broadcast messages for better client display
+                    details = {
+                        "title": getattr(updated_task, "title", ""),
+                        "url": getattr(updated_task, "url", ""),
+                        "output_path": getattr(updated_task, "output_path", ""),
+                        "author": getattr(updated_task, "author", "Unknown"),
+                        "updated_at": datetime.now().isoformat()
+                    }
+                    
+                    # Make sure to broadcast progress with the task status
+                    if progress is not None and status:
+                        await websocket_manager.broadcast_progress(task_id, progress, str(status), details, error)
+                        logger.debug(f"Broadcast progress update: {progress}, status: {status}")
+                    else:
+                        # Fallback to generic status update
+                        message = {
+                            "type": "task_update",
+                            "task_id": task_id,
+                            "status": str(status) if status else "unknown",
+                            "progress": progress if progress is not None else 0.0,
+                            "error": error,
+                            "details": details,
+                            "timestamp": time.time()
+                        }
+                        await websocket_manager.broadcast(task_id, message)
+                        logger.debug(f"Broadcast task update: {status}")
+                
+                return updated_task
+            else:
+                logger.warning(f"Task {task_id} not found or not modified")
+                return None
         except Exception as e:
-            logger.error(f"Error updating task in database: {e}")
-            raise
+            logger.error(f"Error updating task: {e}", exc_info=True)
+            return None
             
     async def _process_download(self, task: DownloadTask):
         """Process a download task."""
