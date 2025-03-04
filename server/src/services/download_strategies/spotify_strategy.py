@@ -55,6 +55,31 @@ class SpotifyStrategy(DownloadStrategy):
             # Set up script paths in the persistent scripts directory
             self.extractor_script = os.path.join(self.scripts_dir, "spotify_track_extractor.py")
             self.downloader_script = os.path.join(self.scripts_dir, "download_spotify_direct.py")
+            self.cookies_path = os.path.join(self.scripts_dir, "youtube.cookies")
+            
+            # Check for YouTube cookies in multiple locations
+            repo_cookies_path = os.path.join(render_root, "youtube.cookies")
+            render_secrets_path = "/etc/secrets/youtube.cookies"
+            
+            # Copy cookies if they exist in either location
+            if os.path.exists(render_secrets_path):
+                logger.info(f"Copying YouTube cookies from Render secrets to scripts directory")
+                try:
+                    shutil.copy2(render_secrets_path, self.cookies_path)
+                    os.chmod(self.cookies_path, 0o600)  # Restrictive permissions for security
+                    logger.info(f"Successfully copied YouTube cookies to: {self.cookies_path}")
+                except Exception as e:
+                    logger.error(f"Failed to copy YouTube cookies from Render secrets: {e}")
+            elif os.path.exists(repo_cookies_path):
+                logger.info(f"Copying YouTube cookies from repository to scripts directory")
+                try:
+                    shutil.copy2(repo_cookies_path, self.cookies_path)
+                    os.chmod(self.cookies_path, 0o600)  # Restrictive permissions for security
+                    logger.info(f"Successfully copied YouTube cookies to: {self.cookies_path}")
+                except Exception as e:
+                    logger.error(f"Failed to copy YouTube cookies from repository: {e}")
+            else:
+                logger.warning("No YouTube cookies file found. Downloads may fail due to bot detection.")
             
             # If scripts don't exist in the data directory, copy them from the app directory
             if not os.path.exists(self.extractor_script):
@@ -83,20 +108,36 @@ class SpotifyStrategy(DownloadStrategy):
             server_dir = os.getcwd()
             
             # Create organized directory structure
-            self.scripts_dir = server_dir
+            self.scripts_dir = os.path.join(server_dir, "scripts")
             self.temp_dir = os.path.join(server_dir, "temp")
             self.spotify_temp_dir = os.path.join(self.temp_dir, "spotify")
             self.downloads_dir = os.path.join(server_dir, "downloads")
             
-            # Ensure directories exist
-            for directory in [self.temp_dir, self.spotify_temp_dir, self.downloads_dir]:
+            # Ensure all directories exist
+            for directory in [self.scripts_dir, self.temp_dir, self.spotify_temp_dir, self.downloads_dir]:
                 os.makedirs(directory, exist_ok=True)
                 logger.info(f"Ensured directory exists: {directory}")
             
-            # Set script paths for development
-            self.extractor_script = os.path.join(self.scripts_dir, "spotify_track_extractor.py")
-            self.downloader_script = os.path.join(self.scripts_dir, "download_spotify_direct.py")
-        
+            # Set paths to the scripts - in development they're in the root directory
+            self.extractor_script = os.path.join(server_dir, "spotify_track_extractor.py")
+            self.downloader_script = os.path.join(server_dir, "download_spotify_direct.py")
+            self.cookies_path = os.path.join(self.scripts_dir, "youtube.cookies")
+            
+            # Check for YouTube cookies in the repository
+            repo_cookies_path = os.path.join(server_dir, "youtube.cookies")
+            
+            # Copy cookies if they exist
+            if os.path.exists(repo_cookies_path):
+                logger.info(f"Copying YouTube cookies from repository to scripts directory")
+                try:
+                    shutil.copy2(repo_cookies_path, self.cookies_path)
+                    os.chmod(self.cookies_path, 0o600)  # Restrictive permissions for security
+                    logger.info(f"Successfully copied YouTube cookies to: {self.cookies_path}")
+                except Exception as e:
+                    logger.error(f"Failed to copy YouTube cookies from repository: {e}")
+            else:
+                logger.warning("No YouTube cookies file found in development environment. Downloads may fail due to bot detection.")
+            
         # Final fallback to any location in PATH
         if not os.path.exists(self.extractor_script):
             logger.warning(f"Spotify extractor script not found at {self.extractor_script}")
@@ -674,15 +715,45 @@ class SpotifyStrategy(DownloadStrategy):
                 logger.info(f"Downloading track {i+1}/{track_count}: {track_name} by {artist_str}")
                 
                 try:
-                    # Directly use yt-dlp to download
+                    # Check for YouTube cookies file in multiple locations
+                    scripts_cookies_path = self.cookies_path if hasattr(self, 'cookies_path') else None
+                    repo_cookies_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(__file__)))), "youtube.cookies")
+                    render_cookies_path = "/etc/secrets/youtube.cookies"
+                    
+                    # Try scripts directory first, then Render secrets, then repo location
+                    if scripts_cookies_path and os.path.exists(scripts_cookies_path):
+                        cookies_path = scripts_cookies_path
+                        logger.info(f"Using YouTube cookies from scripts directory: {cookies_path}")
+                    elif os.path.exists(render_cookies_path):
+                        cookies_path = render_cookies_path
+                        logger.info(f"Using YouTube cookies from Render secrets: {cookies_path}")
+                    elif os.path.exists(repo_cookies_path):
+                        cookies_path = repo_cookies_path
+                        logger.info(f"Using YouTube cookies from repository: {cookies_path}")
+                    else:
+                        cookies_path = None
+                        logger.warning("YouTube cookies file not found. Download may fail due to bot detection.")
+                    
                     cmd = [
                         "yt-dlp",
                         f"ytsearch1:{search_query}",
                         "-x", "--audio-format", "mp3",
                         "--audio-quality", "192" if quality_setting != "high" else "320",
                         "-o", track_path,
-                        "--no-playlist"
+                        "--no-playlist",
                     ]
+                    
+                    # Add cookies option if available
+                    if cookies_path:
+                        cmd.extend(["--cookies", cookies_path])
+                        # Add additional options that help avoid bot detection
+                        cmd.extend([
+                            "--user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
+                            "--socket-timeout", "60",
+                            "--retry-sleep", "3",
+                            "--max-retries", "5",
+                            "--geo-bypass"
+                        ])
                     
                     logger.info(f"Running yt-dlp command: {' '.join(cmd)}")
                     
