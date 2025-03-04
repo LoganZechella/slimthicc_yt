@@ -24,6 +24,9 @@ class Settings(BaseSettings):
     APP_VERSION: str = "1.0.0"
     DEBUG: bool = True
     
+    # Environment detection
+    IS_RENDER: bool = os.getenv("RENDER", "false").lower() in ("true", "1", "yes", "y")
+    
     # Paths
     APP_TEMP_DIR: str = "tmp"  # Use a local temp directory instead of /app
     CONFIG_DIR: str = "config"
@@ -113,6 +116,12 @@ class Settings(BaseSettings):
     TEMP_DIR: Path = Path(os.getenv("TEMP_DIR", "temp"))
     MAX_CONCURRENT_DOWNLOADS: int = int(os.getenv("MAX_CONCURRENT_DOWNLOADS", "3"))
     
+    # Render-specific settings
+    RENDER_DATA_DIR: Path = Path("/opt/render/data")
+    
+    # Scripts directory
+    SCRIPTS_DIR: Path = Path("/opt/render/scripts")
+    
     model_config = SettingsConfigDict(
         env_file=".env",
         case_sensitive=False,
@@ -122,6 +131,9 @@ class Settings(BaseSettings):
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
+        
+        # Log environment information
+        logger.info(f"Environment: {'Render' if self.IS_RENDER else 'Development'}")
         
         # Manual handling of CORS_ORIGINS to avoid Pydantic parsing issues
         self.CORS_ORIGINS = []
@@ -176,8 +188,23 @@ class Settings(BaseSettings):
         
         # Ensure download directories exist
         logger.info(f"Setting up download directories: {self.DOWNLOADS_DIR}, {self.TEMP_DIR}")
-        self.DOWNLOADS_DIR.mkdir(parents=True, exist_ok=True)
-        self.TEMP_DIR.mkdir(parents=True, exist_ok=True)
+        
+        # Use Render data directory if running on Render
+        if self.IS_RENDER:
+            logger.info("Running on Render, using Render data directory")
+            self.RENDER_DATA_DIR.mkdir(parents=True, exist_ok=True)
+            
+            # Set up subdirectories in the Render data directory
+            self.DOWNLOADS_DIR = self.RENDER_DATA_DIR / "downloads"
+            self.TEMP_DIR = self.RENDER_DATA_DIR / "temp"
+            self.SCRIPTS_DIR = self.RENDER_DATA_DIR / "scripts"
+            
+            # Create all subdirectories
+            self.DOWNLOADS_DIR.mkdir(parents=True, exist_ok=True)
+            self.TEMP_DIR.mkdir(parents=True, exist_ok=True)
+            self.SCRIPTS_DIR.mkdir(parents=True, exist_ok=True)
+            
+            logger.info(f"Using Render data directories: downloads={self.DOWNLOADS_DIR}, temp={self.TEMP_DIR}, scripts={self.SCRIPTS_DIR}")
         
         # Convert relative paths to absolute if needed
         if not self.DOWNLOADS_DIR.is_absolute():

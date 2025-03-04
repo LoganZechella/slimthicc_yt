@@ -7,8 +7,11 @@ import tempfile
 import subprocess
 import time
 import shutil
+import zipfile
 from typing import Dict, List, Any, Optional, Generator, AsyncGenerator, Union
 from pathlib import Path
+from datetime import datetime
+from fastapi import HTTPException
 
 from src.config.settings import settings
 from src.models.download import DownloadTask, DownloadStatus, DownloadError
@@ -28,12 +31,51 @@ class SpotifyStrategy(DownloadStrategy):
         self.task_id = None  # Will be set when download is called
         logger.info("Initialized Spotify strategy with standalone scripts approach")
         
-        # Path to standalone scripts - Update to point to server directory root
-        root_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../../"))
-        self.extractor_script = os.path.join(root_dir, "spotify_track_extractor.py")
-        self.downloader_script = os.path.join(root_dir, "download_spotify_direct.py")
+        # Path to standalone scripts - set paths for Render environment
+        # Check if running on Render
+        is_render = settings.IS_RENDER
         
-        # Check if scripts exist
+        if is_render:
+            # Use new Render data directory for scripts
+            render_root = "/opt/render/project/src/server"
+            scripts_dir = str(settings.SCRIPTS_DIR)
+            
+            # Ensure scripts directory exists
+            os.makedirs(scripts_dir, exist_ok=True)
+            
+            # Check if scripts exist in the data directory, otherwise copy them
+            self.extractor_script = os.path.join(scripts_dir, "spotify_track_extractor.py")
+            self.downloader_script = os.path.join(scripts_dir, "download_spotify_direct.py")
+            
+            # If scripts don't exist in the data directory, copy them from the app directory
+            if not os.path.exists(self.extractor_script):
+                source_script = os.path.join(render_root, "spotify_track_extractor.py")
+                if os.path.exists(source_script):
+                    logger.info(f"Copying extractor script to data directory: {self.extractor_script}")
+                    try:
+                        shutil.copy2(source_script, self.extractor_script)
+                        # Set executable permissions
+                        os.chmod(self.extractor_script, 0o755)
+                    except Exception as e:
+                        logger.error(f"Failed to copy extractor script: {e}")
+            
+            if not os.path.exists(self.downloader_script):
+                source_script = os.path.join(render_root, "download_spotify_direct.py")
+                if os.path.exists(source_script):
+                    logger.info(f"Copying downloader script to data directory: {self.downloader_script}")
+                    try:
+                        shutil.copy2(source_script, self.downloader_script)
+                        # Set executable permissions
+                        os.chmod(self.downloader_script, 0o755)
+                    except Exception as e:
+                        logger.error(f"Failed to copy downloader script: {e}")
+        else:
+            # Development environment paths
+            render_root = "/opt/render/project/src/server"
+            self.extractor_script = os.path.join(render_root, "spotify_track_extractor.py")
+            self.downloader_script = os.path.join(render_root, "download_spotify_direct.py")
+        
+        # Final fallback to any location in PATH
         if not os.path.exists(self.extractor_script):
             logger.warning(f"Spotify extractor script not found at {self.extractor_script}")
             # Try alternate locations
@@ -47,7 +89,7 @@ class SpotifyStrategy(DownloadStrategy):
                     self.extractor_script = path
                     logger.info(f"Found extractor script at {path}")
                     break
-            
+        
         if not os.path.exists(self.downloader_script):
             logger.warning(f"Spotify downloader script not found at {self.downloader_script}")
             # Try alternate locations
@@ -61,6 +103,14 @@ class SpotifyStrategy(DownloadStrategy):
                     self.downloader_script = path
                     logger.info(f"Found downloader script at {path}")
                     break
+                    
+        # Add executable permissions
+        try:
+            os.chmod(self.extractor_script, 0o755)
+            os.chmod(self.downloader_script, 0o755)
+            logger.info(f"Added executable permissions to scripts")
+        except Exception as e:
+            logger.warning(f"Could not set permissions on scripts: {e}")
             
         logger.info(f"Using extractor script: {self.extractor_script}")
         logger.info(f"Using downloader script: {self.downloader_script}")
@@ -130,39 +180,48 @@ class SpotifyStrategy(DownloadStrategy):
             
         return None
             
-    async def run_extractor_script(self, url: str) -> Optional[str]:
-        """
-        Run the standalone extractor script to get track information.
-        
-        Args:
-            url: Spotify URL
-            
-        Returns:
-            Path to the JSON file containing track information
-        """
+    async def run_extractor_script(self, spotify_url: str) -> Optional[str]:
+        """Run the Spotify extractor script to get track information."""
         try:
-            logger.info(f"Running extractor script for URL: {url}")
+            logger.info(f"Running extractor script for URL: {spotify_url}")
             
-            # Create temporary directory for output
+            # Get the temporary directory from settings
             temp_dir = Path(settings.TEMP_DIR) / "spotify"
+            logger.info(f"Creating temporary output directory: {temp_dir}")
             temp_dir.mkdir(exist_ok=True, parents=True)
             
             # Add temp_dir to the list of temporary files for cleanup
             self.temp_files.append(temp_dir)
             
+            # Check if the extractor script exists
+            if not os.path.exists(self.extractor_script):
+                logger.error(f"Extractor script not found at {self.extractor_script}")
+                return None
+            else:
+                logger.info(f"Using extractor script at {self.extractor_script}")
+            
             # Set up environment variables for script
             env = os.environ.copy()
             env['SPOTIFY_OUTPUT_DIR'] = str(temp_dir)  # Pass temp dir as an environment variable
+            env['PYTHONPATH'] = os.getcwd()  # Ensure the script can import app modules
             
-            # Run the extractor script within the temporary directory
-            cmd = ["python", self.extractor_script, url]
+            # Ensure the script has executable permissions
+            try:
+                os.chmod(self.extractor_script, 0o755)
+                logger.info(f"Set executable permissions for {self.extractor_script}")
+            except Exception as e:
+                logger.warning(f"Could not set executable permissions: {e}")
+            
+            # Run the extractor script
+            cmd = ["python", self.extractor_script, spotify_url]
+            logger.info(f"Running command: {' '.join(cmd)}")
             
             process = await asyncio.create_subprocess_exec(
                 *cmd,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 env=env,
-                cwd=str(temp_dir)  # Run from the temporary directory
+                cwd=os.getcwd()  # Run from the application root
             )
             
             stdout, stderr = await process.communicate()
@@ -301,407 +360,237 @@ class SpotifyStrategy(DownloadStrategy):
         Args:
             url: The Spotify URL to download from
             output_path: Path where the downloaded file should be saved
-            quality: Quality setting for the download (default: None)
+            quality: The quality setting (optional)
             
         Yields:
-            Progress updates as dictionaries
+            Status updates as the download progresses
         """
-        try:
-            # Store task ID from output path for use in other methods
-            self.task_id = os.path.basename(output_path).split('.')[0]
-            user_url = url or ""
-            if not user_url:
-                raise ValueError("No URL provided")
-
-            if not self.validate_url(user_url):
-                raise ValueError(f"URL is not a valid Spotify URL: {user_url}")
-
-            # Detect if it's a playlist or a track
-            is_playlist = "playlist" in user_url
-
-            # Set the output directory to the downloads folder
-            output_dir = "/opt/render/project/src/server/downloads"
-            os.makedirs(output_dir, exist_ok=True)
-            
-            # Get quality from quality parameter
-            quality_setting = quality or "high"
-            
-            # Use the URL to extract the track or playlist ID
-            spotify_id = self._extract_spotify_id(user_url)
-            
-            # For playlists, create a dedicated directory
-            if is_playlist:
-                # Use our path generator for consistency
-                _, output_dir = self.generate_output_paths({"playlist_id": spotify_id})
-                
-                # Log the playlist download
-                logger.info(f"Downloading Spotify playlist: {user_url} to {output_dir}")
-                yield {"status": "processing", "progress": 0, "detail": f"Starting download of Spotify playlist to {output_dir}"}
-            else:
-                # For single track
-                output_path, output_dir = self.generate_output_paths({"track_id": spotify_id})
-                logger.info(f"Downloading Spotify track: {user_url} to {output_path}")
-                yield {"status": "processing", "progress": 0, "detail": f"Starting download of Spotify track to {output_path}"}
-            
-            # First yield a starting status
+        # Save task_id to use in filenames, etc.
+        self.task_id = Path(output_path).stem
+        
+        # Validate URL before proceeding
+        if not self.is_spotify_url(url):
+            logger.error(f"Invalid Spotify URL: {url}")
             yield {
-                'status': 'downloading', 
-                'progress': 0, 
-                'details': 'Starting Spotify download process'
+                "status": "error",
+                "details": {"message": f"Invalid Spotify URL: {url}"}
             }
+            return
             
-            # Extract tracks using the extractor script
-            json_file = await self.run_extractor_script(user_url)
+        # Extract Spotify ID for use in filenames
+        spotify_id = self._extract_spotify_id(url)
+        if not spotify_id:
+            logger.error(f"Could not extract Spotify ID from URL: {url}")
+            yield {
+                "status": "error",
+                "details": {"message": f"Could not extract Spotify ID from URL: {url}"}
+            }
+            return
+        
+        # Use the Render data directory if running on Render
+        if settings.IS_RENDER:
+            # Use the mounted disk for output
+            base_output_dir = Path(settings.RENDER_DATA_DIR) / "downloads"
+            logger.info(f"Using Render data directory for output: {base_output_dir}")
+        else:
+            # Use the configured output directory for development
+            base_output_dir = Path(settings.DOWNLOADS_DIR)
             
-            if not json_file:
-                logger.error("Failed to extract track information")
-                yield {
-                    'status': 'error',
-                    'progress': 0,
-                    'error': 'Failed to extract track information from Spotify URL'
-                }
-                return
-                
-            logger.info(f"Successfully extracted track information to {json_file}")
-            
-            # Get track count to calculate progress
-            try:
-                with open(json_file, 'r') as f:
-                    tracks = json.load(f)
-                    track_count = len(tracks)
-                    logger.info(f"Found {track_count} tracks in playlist")
-                    
-                    # Extract spotify ID for directory organization
-                    spotify_id = self._extract_spotify_id(user_url) or 'unknown'
-                    
-                    # Yield track list information
-                    track_names = [f"{t.get('name', 'Unknown')} - {', '.join(t.get('artists', ['Unknown']))}" for t in tracks[:10]]
-                    playlist_info = f"Playlist contains {track_count} tracks. First tracks: " + " | ".join(track_names[:3])
-                    if track_count > 3:
-                        playlist_info += f" (+ {track_count - 3} more)"
-                    
-                    yield {
-                        'status': 'downloading',
-                        'progress': 5,
-                        'details': playlist_info
-                    }
-            except Exception as e:
-                logger.error(f"Error reading track information: {e}")
-                track_count = 0
-                spotify_id = self._extract_spotify_id(user_url) or 'unknown'
-            
-            # Create a dedicated task-specific output directory
-            if is_playlist:
-                spotify_output_dir = output_dir
-            else:
-                # For single tracks, use the base directory
-                spotify_output_dir = output_dir
-                
-            logger.info(f"Starting download with output directory: {spotify_output_dir}")
-            
-            # Add docker and render paths for compatibility
-            docker_path = spotify_output_dir.replace("/opt/render/project/src/server/", "/app/")
-            render_path = spotify_output_dir
-            
-            yield {"status": "processing", "progress": 10, "spotify_output_dir": render_path, "docker_path": docker_path}
-            
-            # Set up the command
-            if quality_setting == "high":
-                bitrate = "320"
-            else:
-                bitrate = "192"
-                
-            # Set up proper output format with task ID for uniqueness
-            output_format = "mp3"  # Just use mp3 format for the format parameter
-            output_template = os.path.join(spotify_output_dir, f"%(title)s_{self.task_id}.mp3")  # Full path for output template
-            
-            # Set up command for the downloader script
-            cmd = [
-                self.downloader_script,
-                json_file,
-                "--output-dir", str(spotify_output_dir),
-                "--format", output_format,
-                "--quality", bitrate,
-                "--output-template", output_template
-            ]
-            
-            logger.info(f"Running downloader script: {' '.join(cmd)}")
-            
-            # Start the process
-            process = await asyncio.create_subprocess_exec(
-                *cmd,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE
-            )
-            
-            # Track progress using stdout
-            progress_pattern = re.compile(r'\[(\d+)/(\d+)\]')
-            current_track = 0
-            total_tracks = track_count if track_count > 0 else 1
-            
-            # Variables to track updates
-            last_progress = 10  # Start with 10% (after initialization)
-            last_update_time = time.time()
-            
-            # Process stdout in real-time with timeout protection
-            try:
-                # Set up queue for progress updates from tasks
-                progress_queue = asyncio.Queue()
-                
-                # Flag to indicate when reading is done
-                reading_complete = asyncio.Event()
-                
-                # Task to read stdout and stderr
-                async def read_output():
-                    nonlocal current_track, total_tracks, last_progress
-                    try:
-                        while True:
-                            # Try to read from stdout with timeout
-                            try:
-                                line = await asyncio.wait_for(process.stdout.readline(), timeout=2.0)
-                            except asyncio.TimeoutError:
-                                # Send periodic update on timeout
-                                await progress_queue.put({
-                                    'status': 'downloading',
-                                    'progress': last_progress,
-                                    'details': f"Still working on track {current_track}/{total_tracks}..."
-                                })
-                                continue
-                                
-                            if not line:
-                                # No more output from stdout, check stderr
-                                stderr_line = await process.stderr.readline()
-                                if not stderr_line:
-                                    # No more output from both stdout and stderr
-                                    break
-                                else:
-                                    # Process stderr output
-                                    stderr_str = stderr_line.decode().strip()
-                                    logger.debug(f"Downloader stderr: {stderr_str}")
-                                    # Continue the loop
-                                    continue
-                                    
-                            # Process stdout line
-                            line_str = line.decode().strip()
-                            logger.debug(f"Downloader output: {line_str}")
-                            
-                            # Check for track progress indicators
-                            match = progress_pattern.search(line_str)
-                            if match:
-                                current_track = int(match.group(1))
-                                total_tracks = int(match.group(2))
-                                progress = int((current_track / total_tracks) * 80) + 10  # Scale to 10-90%
-                                last_progress = progress
-                                
-                                await progress_queue.put({
-                                    'status': 'downloading',
-                                    'progress': progress,
-                                    'details': f"Downloading track {current_track}/{total_tracks}"
-                                })
-                            
-                            # Check for track names to provide more detailed status
-                            if "Searching for:" in line_str:
-                                track_name = line_str.split("Searching for:")[1].strip()
-                                await progress_queue.put({
-                                    'status': 'downloading',
-                                    'progress': last_progress,
-                                    'details': f"Searching for track: {track_name}"
-                                })
-                                
-                            elif "Downloading to:" in line_str:
-                                track_path = line_str.split("Downloading to:")[1].strip()
-                                track_filename = os.path.basename(track_path)
-                                
-                                await progress_queue.put({
-                                    'status': 'downloading',
-                                    'progress': last_progress,
-                                    'details': f"Downloading {track_filename}"
-                                })
-                            
-                            # Check for success messages    
-                            elif "Successfully downloaded:" in line_str:
-                                track_name = line_str.split("Successfully downloaded:")[1].strip()
-                                await progress_queue.put({
-                                    'status': 'downloading',
-                                    'progress': last_progress,
-                                    'details': f"Successfully downloaded: {track_name}"
-                                })
-                                
-                            # Check for completion messages
-                            elif "Download complete" in line_str:
-                                success_count = 0
-                                total_count = 0
-                                
-                                if "Successfully downloaded" in line_str:
-                                    parts = line_str.split("Successfully downloaded")[1].strip()
-                                    if "/" in parts:
-                                        success_parts = parts.split("/")
-                                        success_count = int(success_parts[0])
-                                        total_count = int(success_parts[1].split(" ")[0])
-                                
-                                # Explicitly yield a 95% progress update
-                                await progress_queue.put({
-                                    'status': 'processing',
-                                    'progress': 95,
-                                    'details': f"Download complete! Successfully downloaded {success_count}/{total_count} tracks."
-                                })
-                    except Exception as e:
-                        logger.error(f"Error in read_output task: {e}")
-                    finally:
-                        reading_complete.set()  # Signal reading is done
-                
-                # Task to send heartbeat updates
-                async def send_heartbeat():
-                    nonlocal last_progress
-                    try:
-                        while not reading_complete.is_set():
-                            await progress_queue.put({
-                                'status': 'downloading',
-                                'progress': last_progress,
-                                'details': f"Still working on track {current_track}/{total_tracks}..."
-                            })
-                            await asyncio.sleep(3)  # Send update every 3 seconds
-                    except Exception as e:
-                        logger.error(f"Error in heartbeat task: {e}")
-                
-                # Start the tasks
-                read_task = asyncio.create_task(read_output())
-                heartbeat_task = asyncio.create_task(send_heartbeat())
-                
-                # Process updates from the queue and yield them
-                while not reading_complete.is_set() or not progress_queue.empty():
-                    try:
-                        # Wait for a progress update with a timeout
-                        update = await asyncio.wait_for(progress_queue.get(), timeout=1.0)
-                        yield update
-                        progress_queue.task_done()
-                    except asyncio.TimeoutError:
-                        # Check if reading is still in progress
-                        if not reading_complete.is_set():
-                            continue
-                        else:
-                            # If reading is done and queue is empty, break
-                            if progress_queue.empty():
-                                break
-                    except Exception as e:
-                        logger.error(f"Error processing progress update: {e}")
-                
-                # Clean up tasks
-                try:
-                    heartbeat_task.cancel()
-                    await asyncio.gather(read_task, return_exceptions=True)
-                except Exception as e:
-                    logger.error(f"Error cleaning up tasks: {e}")
-                    
-            except Exception as e:
-                logger.error(f"Error in download process: {e}")
-                yield {
-                    'status': 'downloading',
-                    'progress': last_progress,
-                    'details': f"Error in download process: {str(e)}"
-                }
-            
-            # Get the remaining stderr
-            try:
-                stderr_data = await asyncio.wait_for(process.stderr.read(), timeout=2.0)
-                stderr_str = stderr_data.decode()
-                
-                if stderr_str:
-                    logger.warning(f"Downloader stderr: {stderr_str}")
-            except asyncio.TimeoutError:
-                logger.warning("Timeout reading stderr from downloader process")
-            except Exception as e:
-                logger.error(f"Error reading stderr: {e}")
-            
-            # Wait for the process to complete with a timeout
-            return_code = None
-            try:
-                return_code = await asyncio.wait_for(process.wait(), timeout=5.0)
-                logger.info(f"Downloader process completed with return code {return_code}")
-            except asyncio.TimeoutError:
-                logger.warning("Process did not complete in time, checking for files anyway")
-                
-            # Check if download was successful
-            if return_code is not None and return_code != 0:
-                logger.error(f"Downloader script failed with return code {return_code}")
-                yield {
-                    'status': 'error',
-                    'progress': 0,
-                    'error': f"Download failed with error code {return_code}"
-                }
-                return
-                
-            # Check for downloaded files
-            downloaded_files = list(spotify_output_dir.glob("*.mp3"))
-            if downloaded_files:
-                file_count = len(downloaded_files)
-                file_list = ", ".join([os.path.basename(str(f)) for f in downloaded_files[:3]])
-                if file_count > 3:
-                    file_list += f" and {file_count - 3} more files"
-                
-                # Add successful output directory to spotify_output_dir for tracking
-                output_dir_info = f"{spotify_output_dir}\nDownloaded {file_count} files: {file_list}"
-                
-                # If we've reached here, download completed
-                yield {
-                    'status': 'processing',
-                    'progress': 95,
-                    'details': {
-                        'statusMessage': 'Download completed, finalizing files',
-                        'spotify_output_dir': str(spotify_output_dir).replace('/app/', '/opt/render/project/src/server/'),
-                        'fileCount': file_count,
-                        'spotify_output_dir': render_path,
-                        'docker_path': docker_path,
-                        'downloadPath': render_path,
-                        'detail': {
-                            'statusMessage': 'Download completed, finalizing files',
-                            'spotify_output_dir': render_path,
-                            'fileCount': file_count,
-                            'docker_path': docker_path,
-                            'downloadPath': render_path,
-                            'files': downloaded_files
-                        }
-                    }
-                }
-                
-                # Complete the task
-                detail = {
-                    "status": "complete", 
-                    "file_count": len(downloaded_files), 
-                    "spotify_output_dir": str(spotify_output_dir).replace('/app/', '/opt/render/project/src/server/'),
-                    "files": downloaded_files
-                }
-                
-                # Final yield
-                yield {
-                    "status": "complete", 
-                    "progress": 100, 
-                    "spotify_output_dir": render_path,
-                    "detail": {
-                        "status": "complete", 
-                        "file_count": file_count,
-                        "spotify_output_dir": render_path,
-                        "docker_path": docker_path,
-                        "downloadPath": render_path,
-                        "files": [str(f) for f in downloaded_files]
-                    }
-                }
-            else:
-                logger.warning("No MP3 files found in output directory after download")
-                yield {
-                    'status': 'error',
-                    'progress': 0,
-                    'error': "Download process completed but no files were found"
-                }
-            
+        # Create a dedicated output directory for this task
+        spotify_output_dir = base_output_dir / f"spotify_{spotify_id}_{self.task_id}"
+        
+        try:
+            # Ensure output directory exists
+            spotify_output_dir.mkdir(parents=True, exist_ok=True)
+            logger.info(f"Created dedicated output directory for playlist: {spotify_output_dir}")
         except Exception as e:
-            logger.error(f"Error in download process: {e}")
+            logger.error(f"Failed to create output directory: {e}")
+            yield {
+                "status": "error",
+                "details": {"message": f"Failed to create output directory: {str(e)}"}
+            }
+            return
+        
+        # Detect if it's a playlist or a track
+        is_playlist = "playlist" in url.lower()
+
+        # Get quality from quality parameter
+        quality_setting = quality or "high"
+        
+        # Use the URL to extract the track or playlist ID
+        spotify_id = self._extract_spotify_id(url)
+        
+        # For playlists, create a dedicated directory
+        if is_playlist:
+            # Create a dedicated output directory for this playlist
+            output_dir = str(spotify_output_dir)
+            output_template = str(spotify_output_dir / f"%(title)s_{self.task_id}.%(ext)s")
+            
+            # Log the playlist download
+            logger.info(f"Downloading Spotify playlist: {url} to {output_dir}")
+            yield {"status": "processing", "progress": 0, "detail": f"Starting download of Spotify playlist to {output_dir}"}
+        else:
+            # For single track
+            output_template = str(spotify_output_dir / f"track_%(title)s.%(ext)s")
+            logger.info(f"Downloading Spotify track: {url} to {output_template}")
+            yield {"status": "processing", "progress": 0, "detail": f"Starting download of Spotify track to {output_template}"}
+        
+        # First yield a starting status
+        yield {
+            'status': 'downloading', 
+            'progress': 0, 
+            'details': 'Starting Spotify download process'
+        }
+        
+        # Extract tracks using the extractor script
+        json_file = await self.run_extractor_script(url)
+        
+        if not json_file:
+            logger.error("Failed to extract track information")
             yield {
                 'status': 'error',
                 'progress': 0,
-                'error': f"Download failed: {str(e)}"
+                'error': 'Failed to extract track information from Spotify URL'
             }
+            return
             
+        logger.info(f"Successfully extracted track information to {json_file}")
+        
+        # Get track count to calculate progress
+        try:
+            with open(json_file, 'r') as f:
+                tracks = json.load(f)
+                track_count = len(tracks)
+                logger.info(f"Found {track_count} tracks in playlist")
+                
+                # Extract spotify ID for directory organization
+                spotify_id = self._extract_spotify_id(url) or 'unknown'
+                
+                # Yield track list information
+                track_names = [f"{t.get('name', 'Unknown')} - {', '.join(t.get('artists', ['Unknown']))}" for t in tracks[:10]]
+                playlist_info = f"Playlist contains {track_count} tracks. First tracks: " + " | ".join(track_names[:3])
+                if track_count > 3:
+                    playlist_info += f" (+ {track_count - 3} more)"
+                
+                yield {
+                    'status': 'downloading',
+                    'progress': 5,
+                    'details': playlist_info
+                }
+            
+            # Create a dedicated output directory
+            spotify_output_dir = os.path.join("/opt/render/project/src/server/downloads", f"spotify_{spotify_id}_{self.task_id}")
+            os.makedirs(spotify_output_dir, exist_ok=True)
+            logger.info(f"Using output directory: {spotify_output_dir}")
+            
+            # DIRECT APPROACH: Process tracks directly with yt-dlp
+            successful_tracks = []
+            
+            # Process each track in the playlist
+            for i, track in enumerate(tracks):
+                track_name = track.get('name', 'Unknown Track')
+                artists = track.get('artists', ['Unknown Artist'])
+                if isinstance(artists, list):
+                    artist_str = ', '.join(artists)
+                else:
+                    artist_str = str(artists)
+                
+                # Create search query
+                search_query = f"{track_name} {artist_str} audio"
+                
+                # Create safe filename
+                safe_name = re.sub(r'[^\w\-\.]', '_', f"{artist_str} - {track_name}")
+                if len(safe_name) > 100:
+                    safe_name = safe_name[:100]
+                
+                track_path = os.path.join(spotify_output_dir, f"{safe_name}.mp3")
+                
+                # Update progress
+                current_progress = 10 + (i * 80 / track_count)
+                yield {
+                    'status': 'downloading',
+                    'progress': current_progress,
+                    'details': f"[{i+1}/{track_count}] Downloading: {track_name} by {artist_str}"
+                }
+                
+                logger.info(f"Downloading track {i+1}/{track_count}: {track_name} by {artist_str}")
+                
+                try:
+                    # Directly use yt-dlp to download
+                    cmd = [
+                        "yt-dlp",
+                        f"ytsearch1:{search_query}",
+                        "-x", "--audio-format", "mp3",
+                        "--audio-quality", "192" if quality_setting != "high" else "320",
+                        "-o", track_path,
+                        "--no-playlist"
+                    ]
+                    
+                    logger.info(f"Running yt-dlp command: {' '.join(cmd)}")
+                    
+                    process = await asyncio.create_subprocess_exec(
+                        *cmd,
+                        stdout=asyncio.subprocess.PIPE,
+                        stderr=asyncio.subprocess.PIPE
+                    )
+                    
+                    stdout, stderr = await process.communicate()
+                    
+                    if process.returncode == 0:
+                        logger.info(f"Successfully downloaded track: {track_path}")
+                        successful_tracks.append(track_path)
+                    else:
+                        logger.error(f"Failed to download track: {stderr.decode()}")
+                except Exception as track_error:
+                    logger.error(f"Error downloading track: {track_error}")
+            
+            # Create ZIP file with downloaded tracks
+            if successful_tracks:
+                zip_path = os.path.join("/opt/render/project/src/server/downloads", f"spotify_playlist_{spotify_id}_{self.task_id}.zip")
+                
+                yield {
+                    'status': 'processing',
+                    'progress': 90,
+                    'details': f"Creating ZIP file with {len(successful_tracks)}/{track_count} tracks..."
+                }
+                
+                try:
+                    with zipfile.ZipFile(zip_path, 'w') as zipf:
+                        for track_file in successful_tracks:
+                            zipf.write(track_file, os.path.basename(track_file))
+                
+                    logger.info(f"Created ZIP file at {zip_path}")
+                    
+                    yield {
+                        'status': 'complete',
+                        'progress': 100,
+                        'details': f"Downloaded {len(successful_tracks)}/{track_count} tracks. ZIP file created.",
+                        'output_path': zip_path
+                    }
+                    return
+                except Exception as zip_error:
+                    logger.error(f"Error creating ZIP file: {zip_error}")
+                    yield {
+                        'status': 'error',
+                        'error': f"Error creating ZIP file: {str(zip_error)}"
+                    }
+                    return
+            else:
+                logger.error("No tracks were successfully downloaded")
+                yield {
+                    'status': 'error',
+                    'error': "Failed to download any tracks from the playlist"
+                }
+                return
+                
+        except Exception as e:
+            logger.error(f"Error processing track information: {e}", exc_info=True)
+            yield {
+                'status': 'error',
+                'error': f"Error processing track information: {str(e)}"
+            }
+            return
+        
     async def cleanup(self):
         """Clean up resources."""
         await self.ytdlp_strategy.cleanup()
@@ -773,12 +662,26 @@ class SpotifyStrategy(DownloadStrategy):
             # Set default options
             options = task.options or {}
             
-            async for update in self.download(task.url, self.generate_output_paths(options)[0], options.get("quality")):
-                yield update
+            # Generate output paths
+            try:
+                output_path, _ = self.generate_output_paths(options)
+                logger.info(f"Generated output path: {output_path}")
+            except Exception as path_error:
+                logger.error(f"Error generating output paths: {path_error}", exc_info=True)
+                yield {"status": "error", "error": f"Failed to generate output paths: {str(path_error)}"}
+                return
+            
+            # Execute download
+            try:
+                async for update in self.download(task.url, output_path, options.get("quality")):
+                    yield update
+            except Exception as download_error:
+                logger.error(f"Error during download: {download_error}", exc_info=True)
+                yield {"status": "error", "error": f"Download failed: {str(download_error)}"}
                 
         except Exception as e:
             logger.error(f"Error in Spotify strategy: {e}", exc_info=True)
-            yield {"status": "error", "error": str(e)}
+            yield {"status": "error", "error": f"Spotify strategy error: {str(e)}"}
 
     # Helper methods for Spotify
     async def run_extractor_script(self, spotify_url: str) -> Optional[str]:
@@ -786,26 +689,43 @@ class SpotifyStrategy(DownloadStrategy):
         try:
             logger.info(f"Running extractor script for URL: {spotify_url}")
             
-            # Create temporary directory for output
+            # Get the temporary directory from settings
             temp_dir = Path(settings.TEMP_DIR) / "spotify"
+            logger.info(f"Creating temporary output directory: {temp_dir}")
             temp_dir.mkdir(exist_ok=True, parents=True)
             
             # Add temp_dir to the list of temporary files for cleanup
             self.temp_files.append(temp_dir)
             
+            # Check if the extractor script exists
+            if not os.path.exists(self.extractor_script):
+                logger.error(f"Extractor script not found at {self.extractor_script}")
+                return None
+            else:
+                logger.info(f"Using extractor script at {self.extractor_script}")
+            
             # Set up environment variables for script
             env = os.environ.copy()
             env['SPOTIFY_OUTPUT_DIR'] = str(temp_dir)  # Pass temp dir as an environment variable
+            env['PYTHONPATH'] = os.getcwd()  # Ensure the script can import app modules
             
-            # Run the extractor script within the temporary directory
+            # Ensure the script has executable permissions
+            try:
+                os.chmod(self.extractor_script, 0o755)
+                logger.info(f"Set executable permissions for {self.extractor_script}")
+            except Exception as e:
+                logger.warning(f"Could not set executable permissions: {e}")
+            
+            # Run the extractor script
             cmd = ["python", self.extractor_script, spotify_url]
+            logger.info(f"Running command: {' '.join(cmd)}")
             
             process = await asyncio.create_subprocess_exec(
                 *cmd,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 env=env,
-                cwd=str(temp_dir)  # Run from the temporary directory
+                cwd=os.getcwd()  # Run from the application root
             )
             
             stdout, stderr = await process.communicate()

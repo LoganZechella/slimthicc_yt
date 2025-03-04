@@ -472,6 +472,21 @@ async def startup_db_client():
     logger.info(f"Downloads directory: {settings.DOWNLOADS_DIR}")
     logger.info(f"Temp directory: {settings.TEMP_DIR}")
     
+    # Log Render data directory status if on Render
+    if settings.IS_RENDER:
+        render_data_dir = settings.RENDER_DATA_DIR
+        logger.info(f"Render data directory: {render_data_dir}")
+        logger.info(f"Render data directory exists: {render_data_dir.exists()}")
+        logger.info(f"Render data directory is writable: {os.access(str(render_data_dir), os.W_OK)}")
+        
+        # List contents if directory exists
+        if render_data_dir.exists():
+            try:
+                contents = list(render_data_dir.iterdir())
+                logger.info(f"Render data directory contents: {contents}")
+            except Exception as e:
+                logger.error(f"Error listing Render data directory contents: {e}")
+    
     # Connect to MongoDB
     await connect_to_mongo()
     logger.info("Successfully connected to MongoDB")
