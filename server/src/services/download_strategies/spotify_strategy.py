@@ -25,6 +25,7 @@ class SpotifyStrategy(DownloadStrategy):
         super().__init__()
         self.ytdlp_strategy = YtdlpStrategy()
         self.temp_files = []  # List to track temporary files for cleanup
+        self.task_id = None  # Will be set when download is called
         logger.info("Initialized Spotify strategy with standalone scripts approach")
         
         # Path to standalone scripts - Update to point to server directory root
@@ -87,6 +88,20 @@ class SpotifyStrategy(DownloadStrategy):
         except Exception as e:
             logger.error(f"Error validating Spotify URL: {e}")
             return False
+            
+    def is_spotify_url(self, url: str) -> bool:
+        """
+        Check if the URL is a Spotify URL.
+        This is a sync version of validate_url for use in non-async contexts.
+        
+        Args:
+            url: URL to check
+            
+        Returns:
+            True if URL is a Spotify URL, False otherwise
+        """
+        # Simple check for spotify domains or URI scheme
+        return 'spotify.com' in url or url.startswith('spotify:')
             
     def _extract_spotify_id(self, url: str) -> Optional[str]:
         """
@@ -279,14 +294,26 @@ class SpotifyStrategy(DownloadStrategy):
                 'url': url
             }
             
-    async def download(self, task: DownloadTask, options: dict = None) -> AsyncGenerator[dict, None]:
-        """Download a track or playlist from Spotify."""
+    async def download(self, url: str, output_path: str, quality: str = None) -> AsyncGenerator[dict, None]:
+        """
+        Download a track or playlist from Spotify.
+        
+        Args:
+            url: The Spotify URL to download from
+            output_path: Path where the downloaded file should be saved
+            quality: Quality setting for the download (default: None)
+            
+        Yields:
+            Progress updates as dictionaries
+        """
         try:
-            user_url = task.url or ""
+            # Store task ID from output path for use in other methods
+            self.task_id = os.path.basename(output_path).split('.')[0]
+            user_url = url or ""
             if not user_url:
                 raise ValueError("No URL provided")
 
-            if not self.is_spotify_url(user_url):
+            if not self.validate_url(user_url):
                 raise ValueError(f"URL is not a valid Spotify URL: {user_url}")
 
             # Detect if it's a playlist or a track
@@ -296,8 +323,8 @@ class SpotifyStrategy(DownloadStrategy):
             output_dir = "/opt/render/project/src/server/downloads"
             os.makedirs(output_dir, exist_ok=True)
             
-            # Get quality from options
-            quality = options.get("quality", "high") if options else "high"
+            # Get quality from quality parameter
+            quality_setting = quality or "high"
             
             # Use the URL to extract the track or playlist ID
             spotify_id = self._extract_spotify_id(user_url)
@@ -379,7 +406,7 @@ class SpotifyStrategy(DownloadStrategy):
             yield {"status": "processing", "progress": 10, "spotify_output_dir": render_path, "docker_path": docker_path}
             
             # Set up the command
-            if quality == "high":
+            if quality_setting == "high":
                 bitrate = "320"
             else:
                 bitrate = "192"
@@ -746,7 +773,7 @@ class SpotifyStrategy(DownloadStrategy):
             # Set default options
             options = task.options or {}
             
-            async for update in self.download(task, options):
+            async for update in self.download(task.url, self.generate_output_paths(options)[0], options.get("quality")):
                 yield update
                 
         except Exception as e:
