@@ -702,6 +702,7 @@ class SpotifyStrategy(DownloadStrategy):
                 if len(safe_name) > 100:
                     safe_name = safe_name[:100]
                 
+                # Create the safe filename for the track
                 track_path = os.path.join(spotify_output_dir, f"{safe_name}.mp3")
                 
                 # Update progress
@@ -713,6 +714,45 @@ class SpotifyStrategy(DownloadStrategy):
                 }
                 
                 logger.info(f"Downloading track {i+1}/{track_count}: {track_name} by {artist_str}")
+                
+                # Define a function to fix cookie file format issues
+                def fix_cookie_file(original_cookie_path):
+                    """Fix cookie file format issues by removing leading dots from domain names"""
+                    if not os.path.exists(original_cookie_path):
+                        return None
+                        
+                    try:
+                        # Create a temporary fixed cookie file
+                        fixed_cookie_path = f"{original_cookie_path}.fixed"
+                        
+                        with open(original_cookie_path, 'r') as infile, open(fixed_cookie_path, 'w') as outfile:
+                            for line in infile:
+                                line = line.strip()
+                                if not line or line.startswith('#'):
+                                    # Keep comments and empty lines as is
+                                    outfile.write(line + '\n')
+                                    continue
+                                    
+                                # Split the cookie line by tabs
+                                parts = line.split('\t')
+                                if len(parts) >= 7:
+                                    # Remove leading dot from domain if present
+                                    if parts[0].startswith('.'):
+                                        parts[0] = parts[0][1:]  # Remove the leading dot
+                                    
+                                    # Write the fixed line
+                                    outfile.write('\t'.join(parts) + '\n')
+                                else:
+                                    # Line doesn't have expected format, write as is
+                                    outfile.write(line + '\n')
+                        
+                        # Set proper permissions on the fixed file
+                        os.chmod(fixed_cookie_path, 0o600)
+                        logger.info(f"Created fixed cookie file at {fixed_cookie_path}")
+                        return fixed_cookie_path
+                    except Exception as e:
+                        logger.error(f"Error fixing cookie file: {e}")
+                        return None
                 
                 # Define a function to attempt download with different cookie configurations
                 async def attempt_download(use_cookies=False, no_cookies=False):
@@ -756,6 +796,12 @@ class SpotifyStrategy(DownloadStrategy):
                                 logger.warning("YouTube cookies file not found. Download may fail due to bot detection.")
                             
                             if cookies_path:
+                                # Fix cookie file format issues
+                                fixed_cookies_path = fix_cookie_file(cookies_path)
+                                if fixed_cookies_path:
+                                    cookies_path = fixed_cookies_path
+                                    logger.info(f"Using fixed cookie file: {cookies_path}")
+                                
                                 cmd.extend(["--cookies", cookies_path])
                                 logger.info(f"Attempting download with cookies from {cookies_path}")
                         else:
@@ -781,25 +827,38 @@ class SpotifyStrategy(DownloadStrategy):
                     except Exception as e:
                         logger.warning(f"Exception during download attempt: {str(e)}")
                         return False, str(e)
+                        
+                # Try downloading with different cookie strategies
+                success = False
+                error_msg = None
                 
-                # First try without cookies (simplest approach)
-                success, error = await attempt_download(use_cookies=False)
+                # Strategy 1: Try without any cookie options first
+                logger.info(f"Attempting download without cookies first for {track_name}")
+                success, error_msg = await attempt_download(use_cookies=False, no_cookies=False)
                 
-                # If that fails, try with --no-cookies flag
+                # Strategy 2: If that fails, try with --no-cookies flag
                 if not success:
-                    logger.info("Retrying download with --no-cookies flag")
-                    success, error = await attempt_download(no_cookies=True)
+                    logger.info(f"First attempt failed, trying with --no-cookies flag for {track_name}")
+                    success, error_msg = await attempt_download(use_cookies=False, no_cookies=True)
                 
-                # As a last resort, try with cookies file
+                # Strategy 3: As a last resort, try with cookies
                 if not success:
-                    logger.info("Retrying download with cookies file")
-                    success, error = await attempt_download(use_cookies=True)
+                    logger.info(f"Second attempt failed, trying with cookies for {track_name}")
+                    success, error_msg = await attempt_download(use_cookies=True, no_cookies=False)
                 
                 if success:
+                    logger.info(f"Successfully downloaded: {track_name}")
                     successful_tracks.append(track_path)
                 else:
-                    logger.error(f"All download attempts failed for track: {track_name} by {artist_str}")
-                    logger.error(f"Last error: {error}")
+                    logger.error(f"Failed to download track: {error_msg}")
+                
+                # Update progress after download attempt
+                progress_value = 10 + (i + 1) * ((90 - 10) / track_count)
+                yield {
+                    'status': 'downloading',
+                    'progress': progress_value,
+                    'details': f"Downloaded track {i+1}/{track_count}: {track_name}"
+                }
 
             # Create ZIP file with downloaded tracks
             if successful_tracks:
