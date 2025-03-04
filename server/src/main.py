@@ -93,39 +93,15 @@ else:
 
 print(f"Python path (after): {sys.path}")
 
+# Always use absolute imports with src prefix for better reliability
 try:
-    # First try local/relative imports
-    from config.settings import settings
-    from config.database import connect_to_mongo, close_mongo_connection
-    from api.v1.router import router as api_router
-    from services.websocket_manager import websocket_manager
-    print("Using relative imports")
+    from src.config.settings import settings
+    from src.config.database import connect_to_mongo, close_mongo_connection
+    from src.api.v1.router import router as api_router
+    from src.services.websocket_manager import websocket_manager
 except ImportError as e:
-    print(f"Relative import failed: {e}")
-    try:
-        # Try absolute imports from src
-        from src.config.settings import settings
-        from src.config.database import connect_to_mongo, close_mongo_connection
-        from src.api.v1.router import router as api_router
-        from src.services.websocket_manager import websocket_manager
-        print("Using absolute imports with src prefix")
-    except ImportError as e2:
-        print(f"Absolute import with src prefix failed: {e2}")
-        # Last resort - try to find the modules anywhere in the path
-        print("Attempting to locate modules in sys.path...")
-        
-        for path_entry in sys.path:
-            print(f"Checking {path_entry}...")
-            api_dir = Path(path_entry) / "api" / "v1"
-            if api_dir.exists():
-                print(f"Found API directory at: {api_dir}")
-            
-            config_dir = Path(path_entry) / "config"
-            if config_dir.exists():
-                print(f"Found config directory at: {config_dir}")
-        
-        # Raise the original exception if we can't resolve imports
-        raise ImportError("Failed to import required modules") from e
+    print(f"Failed to import required modules: {e}")
+    raise ImportError("Failed to import required modules") from e
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request, Response
 from fastapi.middleware.cors import CORSMiddleware

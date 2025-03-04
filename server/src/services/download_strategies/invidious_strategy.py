@@ -9,7 +9,7 @@ import random
 import time
 import shutil
 from urllib.parse import quote, urlparse
-from .base import DownloadStrategy
+from src.services.download_strategies.base_strategy import DownloadStrategy
 from src.services.ffmpeg_manager import ffmpeg_manager
 from src.config.settings import settings
 import re

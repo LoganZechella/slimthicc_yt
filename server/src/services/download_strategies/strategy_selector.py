@@ -3,11 +3,11 @@ from typing import List, Optional, Dict, Type, Tuple
 import logging
 import asyncio
 import time
-from .base import DownloadStrategy
-from .pytube_strategy import PytubeStrategy
-from .invidious_strategy import InvidiousStrategy
-from .ytdlp_strategy import YtdlpStrategy
-from .spotify_strategy import SpotifyStrategy
+from src.services.download_strategies.base_strategy import DownloadStrategy
+from src.services.download_strategies.pytube_strategy import PytubeStrategy
+from src.services.download_strategies.invidious_strategy import InvidiousStrategy
+from src.services.download_strategies.ytdlp_strategy import YtdlpStrategy
+from src.services.download_strategies.spotify_strategy import SpotifyStrategy
 from src.models.download import DownloadError
 
 logger = logging.getLogger(__name__)

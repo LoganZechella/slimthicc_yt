@@ -3,7 +3,7 @@ from typing import Dict, Any, Optional, AsyncGenerator, Union
 import logging
 from pathlib import Path
 
-from ....models.download import DownloadTask
+from src.models.download import DownloadTask
 
 logger = logging.getLogger(__name__)
 

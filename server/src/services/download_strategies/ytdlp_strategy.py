@@ -6,7 +6,7 @@ import logging
 import re
 import os
 import yt_dlp
-from .base import DownloadStrategy
+from src.services.download_strategies.base_strategy import DownloadStrategy
 from src.services.ffmpeg_manager import ffmpeg_manager
 from src.config.settings import settings
 import shutil

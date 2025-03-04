@@ -10,10 +10,10 @@ import shutil
 from typing import Dict, List, Any, Optional, Generator, AsyncGenerator, Union
 from pathlib import Path
 
-from ....config.settings import settings
-from ....models.download import DownloadTask, DownloadStatus, DownloadError
-from .base_strategy import DownloadStrategy
-from .ytdlp_strategy import YtdlpStrategy
+from src.config.settings import settings
+from src.models.download import DownloadTask, DownloadStatus, DownloadError
+from src.services.download_strategies.base_strategy import DownloadStrategy
+from src.services.download_strategies.ytdlp_strategy import YtdlpStrategy
 
 logger = logging.getLogger(__name__)
 

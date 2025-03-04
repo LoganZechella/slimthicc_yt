@@ -8,7 +8,7 @@ import logging
 import json
 from pytube import YouTube
 from pytube.exceptions import VideoUnavailable, RegexMatchError, ExtractError
-from .base import DownloadStrategy
+from src.services.download_strategies.base_strategy import DownloadStrategy
 from src.services.ffmpeg_manager import ffmpeg_manager
 from src.config.settings import settings
 
