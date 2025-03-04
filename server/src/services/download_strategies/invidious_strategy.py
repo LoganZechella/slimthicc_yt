@@ -12,6 +12,7 @@ from urllib.parse import quote, urlparse
 from src.services.download_strategies.base_strategy import DownloadStrategy
 from src.services.ffmpeg_manager import ffmpeg_manager
 from src.config.settings import settings
+from src.models.download import DownloadTask
 import re
 import os
 from urllib.parse import parse_qs
@@ -324,7 +325,15 @@ class InvidiousStrategy(DownloadStrategy):
         return None
         
     async def get_info(self, url: str) -> Dict[str, any]:
-        """Get video information from Invidious API."""
+        """
+        Get information about a video from Invidious.
+        
+        Args:
+            url: URL to get info for
+            
+        Returns:
+            Dict with video information
+        """
         try:
             video_id = self._extract_video_id(url)
             if not video_id:
@@ -345,8 +354,29 @@ class InvidiousStrategy(DownloadStrategy):
             logger.error(f"Error getting video info from Invidious: {e}")
             return {}
             
-    async def download(self, url: str, output_path: Path, quality: str) -> AsyncGenerator[Dict[str, any], None]:
-        """Download audio using Invidious API."""
+    async def download(self, task: DownloadTask, options: Optional[dict] = None) -> AsyncGenerator[Dict[str, any], None]:
+        """
+        Download a video from YouTube via Invidious.
+        
+        Args:
+            task: The download task containing URL and output information
+            options: Additional options for the download
+            
+        Yields:
+            Progress updates
+        """
+        # Extract values from task
+        url = task.url
+        output_dir = Path(task.output_dir)
+        output_filename = task.output_filename
+        
+        # Create full output path
+        output_path = output_dir / output_filename
+        
+        # Set default quality if not specified in options
+        options = options or {}
+        quality = options.get("quality", "medium")
+        
         try:
             video_id = self._extract_video_id(url)
             if not video_id:
@@ -500,26 +530,67 @@ class InvidiousStrategy(DownloadStrategy):
             yield {'status': 'error', 'error': str(e), 'progress': 0}
             
     async def cleanup(self):
-        """Clean up temporary files and close session."""
-        try:
-            for temp_file in self.temp_files:
-                try:
-                    if isinstance(temp_file, Path) and temp_file.exists():
-                        if temp_file.is_dir():
-                            shutil.rmtree(temp_file, ignore_errors=True)
-                        else:
-                            temp_file.unlink(missing_ok=True)
-                except Exception as e:
-                    logger.error(f"Error cleaning up temp file {temp_file}: {e}")
-                    
-            self.temp_files.clear()
-            
-            # Close session if exists
-            if self.session and not self.session.closed:
-                try:
+        """Clean up temporary files."""
+        if self.session:
+            try:
+                if not self.session.closed:
                     await self.session.close()
-                    logger.debug("Closed aiohttp session")
-                except Exception as e:
-                    logger.error(f"Error closing session: {e}")
+            except Exception as e:
+                logger.error(f"Error closing session in InvidiousStrategy: {e}")
+                
+        for temp_file in self.temp_files:
+            try:
+                if temp_file.exists():
+                    temp_file.unlink()
+            except Exception as e:
+                logger.error(f"Error cleaning up temp file {temp_file}: {e}")
+        self.temp_files.clear()
+        
+    @staticmethod
+    def can_handle(url: str) -> bool:
+        """
+        Determine if this strategy can handle the given URL.
+        
+        Args:
+            url: The URL to check
+            
+        Returns:
+            True if this strategy can handle the URL, False otherwise
+        """
+        # Handle YouTube URLs via Invidious
+        youtube_pattern = r'(?:https?://)?(?:www\.)?(?:youtube\.com|youtu\.be)/.+'
+        return bool(re.match(youtube_pattern, url))
+        
+    async def run(self, task: DownloadTask) -> AsyncGenerator[dict, None]:
+        """
+        Run the download task with this strategy.
+        
+        Args:
+            task: The download task to run
+            
+        Yields:
+            Progress updates
+        """
+        try:
+            url = task.url
+            output_dir = Path(task.output_dir)
+            output_filename = task.output_filename
+            options = task.options or {}
+            
+            # Set quality from options or use default
+            quality = options.get("quality", "medium")
+            
+            # Create full output path
+            output_path = output_dir / output_filename
+            
+            # Use the download method to handle the actual download
+            async for progress in self.download(task, options):
+                yield progress
+                
         except Exception as e:
-            logger.error(f"Error in cleanup: {e}") 
+            logger.error(f"Error running InvidiousStrategy: {e}")
+            yield {
+                "status": "error",
+                "error": str(e),
+                "progress": 0
+            } 

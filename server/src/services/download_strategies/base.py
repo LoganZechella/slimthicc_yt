@@ -1,5 +1,5 @@
 from abc import ABC, abstractmethod
-from typing import Dict, Optional, Callable, AsyncGenerator
+from typing import Dict, Optional, Callable, AsyncGenerator, Any, Union
 from pathlib import Path
 
 class DownloadStrategy(ABC):
@@ -54,4 +54,31 @@ class DownloadStrategy(ABC):
     @abstractmethod
     async def cleanup(self):
         """Cleanup any temporary files or resources."""
+        pass
+        
+    @staticmethod
+    @abstractmethod
+    def can_handle(url: str) -> bool:
+        """
+        Determine if this strategy can handle the given URL.
+        
+        Args:
+            url: The URL to check
+            
+        Returns:
+            True if this strategy can handle the URL, False otherwise
+        """
+        pass
+        
+    @abstractmethod
+    async def run(self, task) -> AsyncGenerator[dict, None]:
+        """
+        Run the download task with this strategy.
+        
+        Args:
+            task: The download task to run
+            
+        Yields:
+            Progress updates
+        """
         pass 

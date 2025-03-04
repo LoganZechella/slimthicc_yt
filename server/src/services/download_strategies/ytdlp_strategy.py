@@ -9,6 +9,7 @@ import yt_dlp
 from src.services.download_strategies.base_strategy import DownloadStrategy
 from src.services.ffmpeg_manager import ffmpeg_manager
 from src.config.settings import settings
+from src.models.download import DownloadTask
 import shutil
 import random
 import json
@@ -310,7 +311,15 @@ class YtdlpStrategy(DownloadStrategy):
             return False
         
     async def get_info(self, url: str) -> Dict[str, any]:
-        """Get video information."""
+        """
+        Get info about a video from YouTube using yt-dlp.
+        
+        Args:
+            url: URL to get info for
+            
+        Returns:
+            Dict with video information
+        """
         max_retries = 3
         
         for attempt in range(max_retries):
@@ -376,25 +385,29 @@ class YtdlpStrategy(DownloadStrategy):
         
         return {}
             
-    async def download(self, url: str, output_path: Union[str, Path], quality: Optional[str] = None) -> AsyncGenerator[Dict[str, Any], None]:
+    async def download(self, task: DownloadTask, options: Optional[dict] = None) -> AsyncGenerator[Dict[str, Any], None]:
         """
         Download a video from YouTube using yt-dlp.
         
         Args:
-            url: URL to download
-            output_path: Path to save the downloaded file
-            quality: Audio quality (high, medium, low)
+            task: The download task containing URL and output information
+            options: Additional options for the download
             
         Yields:
             Progress updates
         """
         try:
-            # Convert output_path to Path object if it's a string
-            if isinstance(output_path, str):
-                output_path = Path(output_path)
-                
-            # Ensure parent directory exists
-            output_path.parent.mkdir(parents=True, exist_ok=True)
+            # Extract values from task
+            url = task.url
+            output_dir = Path(task.output_dir)
+            output_filename = task.output_filename
+            
+            # Create full output path
+            output_path = output_dir / output_filename
+            
+            # Set default quality if not specified in options
+            options = options or {}
+            quality = options.get("quality", "medium")
             
             # First yield a starting status
             self.current_progress = {'status': 'downloading', 'progress': 0, 'url': url}
@@ -435,7 +448,7 @@ class YtdlpStrategy(DownloadStrategy):
             # Configure yt-dlp options
             ydl_opts = self.get_ydl_opts(
                 output_path=output_path,
-                quality=quality or "medium",
+                quality=quality,
                 progress_hook=progress_hook
             )
             
@@ -581,4 +594,52 @@ class YtdlpStrategy(DownloadStrategy):
             if self.po_token:
                 ydl_opts['extractor_args']['youtube']['po_token'] = self.po_token
         
-        return ydl_opts 
+        return ydl_opts
+
+    @staticmethod
+    def can_handle(url: str) -> bool:
+        """
+        Determine if this strategy can handle the given URL.
+        
+        Args:
+            url: The URL to check
+            
+        Returns:
+            True if this strategy can handle the URL, False otherwise
+        """
+        # Can handle YouTube and other video platforms supported by yt-dlp
+        youtube_pattern = r'(?:https?://)?(?:www\.)?(?:youtube\.com|youtu\.be)/.+'
+        other_video_pattern = r'(?:https?://)?(?:www\.)?(vimeo|dailymotion|twitch)\.com/.+'
+        
+        return bool(re.match(youtube_pattern, url) or re.match(other_video_pattern, url))
+        
+    async def run(self, task: DownloadTask) -> AsyncGenerator[dict, None]:
+        """
+        Run the download task with this strategy.
+        
+        Args:
+            task: The download task to run
+            
+        Yields:
+            Progress updates
+        """
+        try:
+            url = task.url
+            output_dir = Path(task.output_dir)
+            output_filename = task.output_filename
+            options = task.options or {}
+            
+            # Create full output path
+            output_path = output_dir / output_filename
+            
+            # Use the download method to handle the actual download
+            async for progress in self.download(task, options):
+                yield progress
+                
+        except Exception as e:
+            logger.error(f"Error running YtdlpStrategy: {e}")
+            yield {
+                "status": "error",
+                "error": str(e),
+                "progress": 0
+            } 

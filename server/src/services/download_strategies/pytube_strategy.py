@@ -11,6 +11,7 @@ from pytube.exceptions import VideoUnavailable, RegexMatchError, ExtractError
 from src.services.download_strategies.base_strategy import DownloadStrategy
 from src.services.ffmpeg_manager import ffmpeg_manager
 from src.config.settings import settings
+from src.models.download import DownloadTask
 
 logger = logging.getLogger(__name__)
 
@@ -141,12 +142,30 @@ class PytubeStrategy(DownloadStrategy):
             logger.error(f"Error getting video info: {e}")
             return {}
             
-    async def download(self, url: str, output_path: Path, quality: str) -> AsyncGenerator[Dict[str, any], None]:
-        """Download audio using pytube with progress tracking."""
-        try:
-            # Convert URL to string if needed
-            url_str = str(url)
+    async def download(self, task: DownloadTask, options: Optional[dict] = None) -> AsyncGenerator[Dict[str, any], None]:
+        """
+        Download a video from YouTube using pytube.
+        
+        Args:
+            task: The download task containing URL and output information
+            options: Additional options for the download
             
+        Yields:
+            Progress updates
+        """
+        # Extract values from task
+        url = task.url
+        output_dir = Path(task.output_dir) 
+        output_filename = task.output_filename
+        
+        # Create full output path
+        output_path = output_dir / output_filename
+        
+        # Set default quality if not specified in options
+        options = options or {}
+        quality = options.get("quality", "medium")
+        
+        try:
             # Setup progress tracking
             progress = {'bytes_downloaded': 0, 'file_size': 0}
             
@@ -156,7 +175,7 @@ class PytubeStrategy(DownloadStrategy):
             
             # Create YouTube object with progress callback
             yt = self._create_youtube_object(
-                url_str,
+                url,
                 on_progress_callback=progress_callback,
                 on_complete_callback=None
             )
@@ -250,4 +269,53 @@ class PytubeStrategy(DownloadStrategy):
                     temp_file.unlink()
             except Exception as e:
                 logger.error(f"Error cleaning up temp file {temp_file}: {e}")
-        self.temp_files.clear() 
+        self.temp_files.clear()
+        
+    @staticmethod
+    def can_handle(url: str) -> bool:
+        """
+        Determine if this strategy can handle the given URL.
+        
+        Args:
+            url: The URL to check
+            
+        Returns:
+            True if this strategy can handle the URL, False otherwise
+        """
+        # Handle YouTube URLs with pytube
+        youtube_pattern = r'(?:https?://)?(?:www\.)?(?:youtube\.com|youtu\.be)/.+'
+        return bool(re.match(youtube_pattern, url))
+        
+    async def run(self, task: DownloadTask) -> AsyncGenerator[dict, None]:
+        """
+        Run the download task with this strategy.
+        
+        Args:
+            task: The download task to run
+            
+        Yields:
+            Progress updates
+        """
+        try:
+            url = task.url
+            output_dir = Path(task.output_dir)
+            output_filename = task.output_filename
+            options = task.options or {}
+            
+            # Set quality from options or use default
+            quality = options.get("quality", "medium")
+            
+            # Create full output path
+            output_path = output_dir / output_filename
+            
+            # Use the download method to handle the actual download
+            async for progress in self.download(task, options):
+                yield progress
+                
+        except Exception as e:
+            logger.error(f"Error running PytubeStrategy: {e}")
+            yield {
+                "status": "error",
+                "error": str(e),
+                "progress": 0
+            } 
