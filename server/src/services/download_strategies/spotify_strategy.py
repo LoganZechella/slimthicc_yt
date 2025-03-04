@@ -35,17 +35,26 @@ class SpotifyStrategy(DownloadStrategy):
         # Check if running on Render
         is_render = settings.IS_RENDER
         
+        # Set up organized directory structure
         if is_render:
-            # Use new Render data directory for scripts
+            # Use Render's persistent storage for all data
             render_root = "/opt/render/project/src/server"
-            scripts_dir = str(settings.SCRIPTS_DIR)
+            data_root = str(settings.RENDER_DATA_DIR)
             
-            # Ensure scripts directory exists
-            os.makedirs(scripts_dir, exist_ok=True)
+            # Create organized directory structure
+            self.scripts_dir = os.path.join(data_root, "scripts")
+            self.temp_dir = os.path.join(data_root, "temp")
+            self.spotify_temp_dir = os.path.join(self.temp_dir, "spotify")
+            self.downloads_dir = os.path.join(data_root, "downloads")
             
-            # Check if scripts exist in the data directory, otherwise copy them
-            self.extractor_script = os.path.join(scripts_dir, "spotify_track_extractor.py")
-            self.downloader_script = os.path.join(scripts_dir, "download_spotify_direct.py")
+            # Ensure all directories exist
+            for directory in [self.scripts_dir, self.temp_dir, self.spotify_temp_dir, self.downloads_dir]:
+                os.makedirs(directory, exist_ok=True)
+                logger.info(f"Ensured directory exists: {directory}")
+            
+            # Set up script paths in the persistent scripts directory
+            self.extractor_script = os.path.join(self.scripts_dir, "spotify_track_extractor.py")
+            self.downloader_script = os.path.join(self.scripts_dir, "download_spotify_direct.py")
             
             # If scripts don't exist in the data directory, copy them from the app directory
             if not os.path.exists(self.extractor_script):
@@ -70,10 +79,23 @@ class SpotifyStrategy(DownloadStrategy):
                     except Exception as e:
                         logger.error(f"Failed to copy downloader script: {e}")
         else:
-            # Development environment paths
-            render_root = "/opt/render/project/src/server"
-            self.extractor_script = os.path.join(render_root, "spotify_track_extractor.py")
-            self.downloader_script = os.path.join(render_root, "download_spotify_direct.py")
+            # Development environment paths - use absolute paths
+            server_dir = os.getcwd()
+            
+            # Create organized directory structure
+            self.scripts_dir = server_dir
+            self.temp_dir = os.path.join(server_dir, "temp")
+            self.spotify_temp_dir = os.path.join(self.temp_dir, "spotify")
+            self.downloads_dir = os.path.join(server_dir, "downloads")
+            
+            # Ensure directories exist
+            for directory in [self.temp_dir, self.spotify_temp_dir, self.downloads_dir]:
+                os.makedirs(directory, exist_ok=True)
+                logger.info(f"Ensured directory exists: {directory}")
+            
+            # Set script paths for development
+            self.extractor_script = os.path.join(self.scripts_dir, "spotify_track_extractor.py")
+            self.downloader_script = os.path.join(self.scripts_dir, "download_spotify_direct.py")
         
         # Final fallback to any location in PATH
         if not os.path.exists(self.extractor_script):
@@ -185,13 +207,19 @@ class SpotifyStrategy(DownloadStrategy):
         try:
             logger.info(f"Running extractor script for URL: {spotify_url}")
             
-            # Get the temporary directory from settings
-            temp_dir = Path(settings.TEMP_DIR) / "spotify"
-            logger.info(f"Creating temporary output directory: {temp_dir}")
-            temp_dir.mkdir(exist_ok=True, parents=True)
+            # Use the pre-created spotify temp directory
+            temp_dir = Path(self.spotify_temp_dir)
+            logger.info(f"Using temporary output directory: {temp_dir}")
             
-            # Add temp_dir to the list of temporary files for cleanup
-            self.temp_files.append(temp_dir)
+            # Generate a unique subdirectory for this extraction to avoid conflicts
+            import uuid
+            run_id = str(uuid.uuid4())[:8]
+            extraction_dir = temp_dir / run_id
+            extraction_dir.mkdir(exist_ok=True, parents=True)
+            logger.info(f"Created unique extraction directory: {extraction_dir}")
+            
+            # Add extraction_dir to the list of temporary files for cleanup
+            self.temp_files.append(extraction_dir)
             
             # Check if the extractor script exists
             if not os.path.exists(self.extractor_script):
@@ -200,22 +228,77 @@ class SpotifyStrategy(DownloadStrategy):
             else:
                 logger.info(f"Using extractor script at {self.extractor_script}")
             
+            # Try two approaches to ensure the output file is created in our directory
+            
+            # Approach 1: Modify the script (preferred but may fail)
+            use_modified_script = True
+            modified_script_path = extraction_dir / "modified_extractor.py"
+            
+            try:
+                # Read the original script
+                with open(self.extractor_script, 'r') as f:
+                    script_content = f.read()
+                
+                # Modify the script to save files to our extraction directory
+                # Find the line that saves the JSON file
+                output_file_line = "output_file = f\"{safe_name}_tracks.json\""
+                modified_output_file_line = f"output_file = os.path.join('{str(extraction_dir)}', f\"{{safe_name}}_tracks.json\")"
+                
+                # Replace the line with our modified version
+                modified_script = script_content.replace(output_file_line, modified_output_file_line)
+                
+                # Write the modified script
+                with open(modified_script_path, 'w') as f:
+                    f.write(modified_script)
+                
+                # Make it executable
+                os.chmod(modified_script_path, 0o755)
+                logger.info(f"Created modified extractor script at {modified_script_path}")
+                
+                # Add to cleanup list
+                self.temp_files.append(modified_script_path)
+            except Exception as e:
+                logger.error(f"Failed to create modified extractor script: {e}")
+                use_modified_script = False
+            
+            # Approach 2: Create symbolic link from current working directory to extraction directory
+            # This is a fallback for when we can't modify the script
+            symlink_created = False
+            cwd_path = Path.cwd()
+            
+            if not use_modified_script:
+                try:
+                    # Create a symlink to track cwd files in our extraction directory
+                    # This helps us keep track of files created in the current directory
+                    symlink_path = extraction_dir / "cwd_link"
+                    if symlink_path.exists():
+                        symlink_path.unlink()
+                    
+                    # Create symlink from extraction_dir/cwd_link to current working directory
+                    os.symlink(cwd_path, symlink_path)
+                    logger.info(f"Created symlink from {symlink_path} to {cwd_path}")
+                    symlink_created = True
+                    self.temp_files.append(symlink_path)
+                except Exception as e:
+                    logger.warning(f"Could not create symlink, falling back to path monitoring: {e}")
+            
             # Set up environment variables for script
             env = os.environ.copy()
-            env['SPOTIFY_OUTPUT_DIR'] = str(temp_dir)  # Pass temp dir as an environment variable
+            env['SPOTIFY_OUTPUT_DIR'] = str(extraction_dir)  # Pass output dir as environment variable
             env['PYTHONPATH'] = os.getcwd()  # Ensure the script can import app modules
             
-            # Ensure the script has executable permissions
-            try:
-                os.chmod(self.extractor_script, 0o755)
-                logger.info(f"Set executable permissions for {self.extractor_script}")
-            except Exception as e:
-                logger.warning(f"Could not set executable permissions: {e}")
-            
-            # Run the extractor script
-            cmd = ["python", self.extractor_script, spotify_url]
+            # Determine which script to run
+            script_to_run = str(modified_script_path) if use_modified_script else self.extractor_script 
+            cmd = ["python", script_to_run, spotify_url]
             logger.info(f"Running command: {' '.join(cmd)}")
             
+            # Track files in cwd before running script if we couldn't modify it
+            existing_json_files = set()
+            if not use_modified_script:
+                existing_json_files = set(path for path in cwd_path.glob("*_tracks.json"))
+                logger.info(f"Found {len(existing_json_files)} existing JSON files in CWD before running script")
+            
+            # Run the extractor script
             process = await asyncio.create_subprocess_exec(
                 *cmd,
                 stdout=asyncio.subprocess.PIPE,
@@ -235,24 +318,99 @@ class SpotifyStrategy(DownloadStrategy):
             if process.returncode != 0:
                 logger.error(f"Extractor script failed with return code {process.returncode}")
                 return None
-                
-            # Find the output JSON file in the temp directory
-            json_files = list(temp_dir.glob("*_tracks.json"))
-            if not json_files:
-                logger.error("No track information JSON file found after running extractor")
-                return None
-                
-            # Use the most recently created file
-            latest_file = max(json_files, key=lambda f: f.stat().st_mtime)
-            logger.info(f"Found track information at {latest_file}")
             
-            # Add the JSON file to the list of temporary files for cleanup
-            self.temp_files.append(latest_file)
+            # If we didn't modify the script, check for new files in cwd
+            if not use_modified_script:
+                # Find new JSON files that appeared in cwd after running the script
+                new_json_files = set(path for path in cwd_path.glob("*_tracks.json")) - existing_json_files
+                if new_json_files:
+                    latest_file = max(new_json_files, key=lambda f: f.stat().st_mtime)
+                    logger.info(f"Found new track information file in CWD: {latest_file}")
+                    
+                    # Copy the file to our extraction directory
+                    dest_path = extraction_dir / latest_file.name
+                    try:
+                        shutil.copy2(latest_file, dest_path)
+                        logger.info(f"Copied JSON file to extraction directory: {dest_path}")
+                        
+                        # Add original file to temp_files for cleanup
+                        self.temp_files.append(latest_file)
+                        
+                        return str(dest_path)
+                    except Exception as e:
+                        logger.error(f"Failed to copy JSON file to extraction directory: {e}")
+                        # Continue with the search anyway
             
-            return str(latest_file)
+            # Look for the output JSON file in multiple possible locations
+            search_paths = [
+                extraction_dir,  # Our dedicated extraction directory (primary)
+                Path.cwd(),      # Current working directory (fallback)
+                Path(self.temp_dir),  # General temp directory
+                Path(self.spotify_temp_dir)  # Spotify temp directory
+            ]
+            
+            for search_path in search_paths:
+                logger.info(f"Searching for JSON files in {search_path}")
+                json_files = list(search_path.glob("*_tracks.json"))
+                if json_files:
+                    # Use the most recently created file
+                    latest_file = max(json_files, key=lambda f: f.stat().st_mtime)
+                    logger.info(f"Found track information at {latest_file}")
+                    
+                    # If file is not in our extraction directory, copy it there for future reference
+                    if latest_file.parent != extraction_dir:
+                        dest_path = extraction_dir / latest_file.name
+                        shutil.copy2(latest_file, dest_path)
+                        logger.info(f"Copied JSON file to extraction directory: {dest_path}")
+                        
+                        # Add the original file to cleanup if it's not in our extraction directory
+                        if not str(latest_file).startswith(str(extraction_dir)):
+                            self.temp_files.append(latest_file)
+                        
+                        latest_file = dest_path
+                    
+                    # Add the JSON file to the list of temporary files for cleanup
+                    self.temp_files.append(latest_file)
+                    
+                    return str(latest_file)
+            
+            # Try to parse the output to see if we can get file path information
+            if stdout_str:
+                # Look for lines like "Track information saved to <filename>"
+                import re
+                file_match = re.search(r"Track information saved to\s+(\S+)", stdout_str)
+                if file_match:
+                    potential_file = file_match.group(1).strip()
+                    logger.info(f"Found potential file path in output: {potential_file}")
+                    
+                    # Try different path combinations
+                    potential_paths = [
+                        Path(potential_file),  # As is
+                        Path.cwd() / potential_file,  # Relative to cwd
+                        extraction_dir / potential_file  # Relative to extraction dir
+                    ]
+                    
+                    for path in potential_paths:
+                        if path.exists():
+                            logger.info(f"Found track information file from stdout: {path}")
+                            
+                            # Copy to extraction dir if not already there
+                            if path.parent != extraction_dir:
+                                dest_path = extraction_dir / path.name
+                                shutil.copy2(path, dest_path)
+                                logger.info(f"Copied JSON file to extraction directory: {dest_path}")
+                                self.temp_files.append(path)
+                                path = dest_path
+                            
+                            # Add to cleanup
+                            self.temp_files.append(path)
+                            return str(path)
+            
+            logger.error("No track information JSON file found after running extractor")
+            return None
             
         except Exception as e:
-            logger.error(f"Error running extractor script: {e}")
+            logger.error(f"Error running extractor script: {e}", exc_info=True)
             return None
             
     async def get_info(self, url: str) -> Dict[str, Any]:
@@ -629,12 +787,12 @@ class SpotifyStrategy(DownloadStrategy):
         track_id = options.get("track_id", options.get("id", ""))
         playlist_id = options.get("playlist_id", "")
         
-        # Use Render path for consistent file access
-        base_dir = "/opt/render/project/src/server/downloads"
+        # Use the pre-defined downloads directory for consistent file access
+        base_dir = self.downloads_dir
         
         if playlist_id:
             # For playlists, create a dedicated directory
-            output_dir = f"{base_dir}/spotify_{playlist_id}_{self.task_id}"
+            output_dir = os.path.join(base_dir, f"spotify_playlist_{playlist_id}_{self.task_id}")
             os.makedirs(output_dir, exist_ok=True)
             logger.info(f"Created dedicated output directory for playlist: {output_dir}")
             
@@ -643,7 +801,7 @@ class SpotifyStrategy(DownloadStrategy):
             output_path = os.path.join(output_dir, filename)
         else:
             # For single tracks, use a direct path
-            filename = f"spotify_{track_id}_{self.task_id}.%(ext)s"
+            filename = f"spotify_track_{track_id}_{self.task_id}.%(ext)s"
             output_path = os.path.join(base_dir, filename)
             output_dir = base_dir
             
@@ -652,7 +810,7 @@ class SpotifyStrategy(DownloadStrategy):
         logger.info(f"Output directory: {output_dir}")
         logger.info(f"Output path: {output_path}")
         
-        return output_path, output_dir 
+        return output_path, output_dir
 
     async def run(self, task: DownloadTask) -> AsyncGenerator[dict, None]:
         """Run the Spotify download strategy."""
@@ -681,80 +839,4 @@ class SpotifyStrategy(DownloadStrategy):
                 
         except Exception as e:
             logger.error(f"Error in Spotify strategy: {e}", exc_info=True)
-            yield {"status": "error", "error": f"Spotify strategy error: {str(e)}"}
-
-    # Helper methods for Spotify
-    async def run_extractor_script(self, spotify_url: str) -> Optional[str]:
-        """Run the Spotify extractor script to get track information."""
-        try:
-            logger.info(f"Running extractor script for URL: {spotify_url}")
-            
-            # Get the temporary directory from settings
-            temp_dir = Path(settings.TEMP_DIR) / "spotify"
-            logger.info(f"Creating temporary output directory: {temp_dir}")
-            temp_dir.mkdir(exist_ok=True, parents=True)
-            
-            # Add temp_dir to the list of temporary files for cleanup
-            self.temp_files.append(temp_dir)
-            
-            # Check if the extractor script exists
-            if not os.path.exists(self.extractor_script):
-                logger.error(f"Extractor script not found at {self.extractor_script}")
-                return None
-            else:
-                logger.info(f"Using extractor script at {self.extractor_script}")
-            
-            # Set up environment variables for script
-            env = os.environ.copy()
-            env['SPOTIFY_OUTPUT_DIR'] = str(temp_dir)  # Pass temp dir as an environment variable
-            env['PYTHONPATH'] = os.getcwd()  # Ensure the script can import app modules
-            
-            # Ensure the script has executable permissions
-            try:
-                os.chmod(self.extractor_script, 0o755)
-                logger.info(f"Set executable permissions for {self.extractor_script}")
-            except Exception as e:
-                logger.warning(f"Could not set executable permissions: {e}")
-            
-            # Run the extractor script
-            cmd = ["python", self.extractor_script, spotify_url]
-            logger.info(f"Running command: {' '.join(cmd)}")
-            
-            process = await asyncio.create_subprocess_exec(
-                *cmd,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                env=env,
-                cwd=os.getcwd()  # Run from the application root
-            )
-            
-            stdout, stderr = await process.communicate()
-            stdout_str = stdout.decode()
-            stderr_str = stderr.decode()
-            
-            logger.debug(f"Extractor script stdout: {stdout_str}")
-            if stderr_str:
-                logger.warning(f"Extractor script stderr: {stderr_str}")
-                
-            if process.returncode != 0:
-                logger.error(f"Extractor script failed with return code {process.returncode}")
-                return None
-                
-            # Find the output JSON file in the temp directory
-            json_files = list(temp_dir.glob("*_tracks.json"))
-            if not json_files:
-                logger.error("No track information JSON file found after running extractor")
-                return None
-                
-            # Use the most recently created file
-            latest_file = max(json_files, key=lambda f: f.stat().st_mtime)
-            logger.info(f"Found track information at {latest_file}")
-            
-            # Add the JSON file to the list of temporary files for cleanup
-            self.temp_files.append(latest_file)
-            
-            return str(latest_file)
-            
-        except Exception as e:
-            logger.error(f"Error running extractor script: {e}")
-            return None 
+            yield {"status": "error", "error": f"Spotify strategy error: {str(e)}"} 
