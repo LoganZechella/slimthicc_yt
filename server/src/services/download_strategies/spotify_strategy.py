@@ -46,9 +46,10 @@ class SpotifyStrategy(DownloadStrategy):
             self.temp_dir = os.path.join(data_root, "temp")
             self.spotify_temp_dir = os.path.join(self.temp_dir, "spotify")
             self.downloads_dir = os.path.join(data_root, "downloads")
+            self.chrome_profile_dir = os.path.join(data_root, "chrome_profile")
             
             # Ensure all directories exist
-            for directory in [self.scripts_dir, self.temp_dir, self.spotify_temp_dir, self.downloads_dir]:
+            for directory in [self.scripts_dir, self.temp_dir, self.spotify_temp_dir, self.downloads_dir, self.chrome_profile_dir]:
                 os.makedirs(directory, exist_ok=True)
                 logger.info(f"Ensured directory exists: {directory}")
             
@@ -79,7 +80,7 @@ class SpotifyStrategy(DownloadStrategy):
                 except Exception as e:
                     logger.error(f"Failed to copy YouTube cookies from repository: {e}")
             else:
-                logger.warning("No YouTube cookies file found. Downloads may fail due to bot detection.")
+                logger.warning("No YouTube cookies file found. Downloads may fall back to cookies-from-browser.")
             
             # If scripts don't exist in the data directory, copy them from the app directory
             if not os.path.exists(self.extractor_script):
@@ -112,9 +113,10 @@ class SpotifyStrategy(DownloadStrategy):
             self.temp_dir = os.path.join(server_dir, "temp")
             self.spotify_temp_dir = os.path.join(self.temp_dir, "spotify")
             self.downloads_dir = os.path.join(server_dir, "downloads")
+            self.chrome_profile_dir = os.path.join(server_dir, "chrome_profile")
             
             # Ensure all directories exist
-            for directory in [self.scripts_dir, self.temp_dir, self.spotify_temp_dir, self.downloads_dir]:
+            for directory in [self.scripts_dir, self.temp_dir, self.spotify_temp_dir, self.downloads_dir, self.chrome_profile_dir]:
                 os.makedirs(directory, exist_ok=True)
                 logger.info(f"Ensured directory exists: {directory}")
             
@@ -136,7 +138,20 @@ class SpotifyStrategy(DownloadStrategy):
                 except Exception as e:
                     logger.error(f"Failed to copy YouTube cookies from repository: {e}")
             else:
-                logger.warning("No YouTube cookies file found in development environment. Downloads may fail due to bot detection.")
+                logger.warning("No YouTube cookies file found in development environment. Downloads may fall back to cookies-from-browser.")
+            
+        # Check if Chrome is installed for cookies-from-browser
+        try:
+            chrome_check = subprocess.run(["which", "google-chrome"], capture_output=True, text=True)
+            if chrome_check.returncode == 0:
+                self.chrome_path = chrome_check.stdout.strip()
+                logger.info(f"Found Chrome at: {self.chrome_path}")
+            else:
+                self.chrome_path = "chrome"  # Use default path lookup
+                logger.warning("Chrome not found with direct path. Using default 'chrome' reference.")
+        except Exception as e:
+            self.chrome_path = "chrome"  # Fallback
+            logger.warning(f"Error checking Chrome installation: {e}")
             
         # Final fallback to any location in PATH
         if not os.path.exists(self.extractor_script):
@@ -552,6 +567,196 @@ class SpotifyStrategy(DownloadStrategy):
                 'url': url
             }
             
+    async def attempt_download(self, track_name, artist_str, track_path, quality="medium"):
+        """
+        Try to download a track using multiple approaches with YouTube search as source.
+        
+        Args:
+            track_name: Name of the track to download
+            artist_str: Artist(s) of the track
+            track_path: Output file path for the download
+            quality: Quality setting ("high", "medium", "low")
+            
+        Returns:
+            Tuple of (success boolean, error message if failed)
+        """
+        # Create search query
+        search_query = f"{track_name} {artist_str} audio"
+        
+        # Configure quality setting
+        audio_quality = "320" if quality == "high" else "192"
+        
+        # Try multiple download approaches in sequence
+        approaches = [
+            # Approach 1: Try cookies-from-browser with Chrome
+            {
+                "name": "cookies-from-browser",
+                "description": "Using Chrome browser cookies",
+                "cmd_extra": ["--cookies-from-browser", "chrome"]
+            },
+            # Approach 2: Try cookies-from-browser with Firefox
+            {
+                "name": "cookies-from-browser-firefox",
+                "description": "Using Firefox browser cookies",
+                "cmd_extra": ["--cookies-from-browser", "firefox"]
+            },
+            # Approach 3: Try with no cookies
+            {
+                "name": "no-cookies",
+                "description": "Using --no-cookies flag",
+                "cmd_extra": ["--no-cookies"]
+            },
+            # Approach 4: Try with manual cookies file
+            {
+                "name": "cookies-file",
+                "description": "Using cookies file",
+                "cmd_extra": self._get_cookies_file_args()
+            }
+        ]
+        
+        # Try each approach in sequence
+        for approach in approaches:
+            try:
+                logger.info(f"Attempting download of '{track_name}' with {approach['description']}")
+                
+                # Base yt-dlp command
+                cmd = [
+                    "yt-dlp",
+                    f"ytsearch1:{search_query}",
+                    "-x", "--audio-format", "mp3",
+                    "--audio-quality", audio_quality,
+                    "-o", track_path,
+                    "--no-playlist",
+                    "--user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+                    "--socket-timeout", "60",
+                    "--retry-sleep", "3",
+                    "--retries", "5",
+                    "--geo-bypass",
+                    "--verbose"  # Add verbose output for better error diagnostics
+                ]
+                
+                # Add approach-specific arguments
+                cmd.extend(approach["cmd_extra"])
+                
+                logger.info(f"Running yt-dlp command: {' '.join(cmd)}")
+                
+                # Execute the download command
+                process = await asyncio.create_subprocess_exec(
+                    *cmd,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE
+                )
+                
+                stdout, stderr = await process.communicate()
+                stdout_str = stdout.decode()
+                stderr_str = stderr.decode()
+                
+                # Log stdout for debugging if verbose
+                if "--verbose" in cmd:
+                    logger.debug(f"yt-dlp stdout: {stdout_str[:500]}...")
+                
+                # Check if download was successful
+                if process.returncode == 0:
+                    logger.info(f"Successfully downloaded '{track_name}' using {approach['description']}")
+                    return True, None
+                else:
+                    # Check for specific errors to determine next steps
+                    error_msg = stderr_str
+                    logger.warning(f"Download attempt with {approach['description']} failed: {error_msg[:200]}...")
+                    
+                    # If this is the last approach, save the full error
+                    if approach == approaches[-1]:
+                        logger.error(f"All download approaches failed for '{track_name}'. Last error: {error_msg}")
+                
+            except Exception as e:
+                logger.warning(f"Exception during {approach['description']} download attempt: {str(e)}")
+                if approach == approaches[-1]:
+                    logger.error(f"All download approaches failed with exceptions for '{track_name}'")
+                    return False, str(e)
+        
+        # If all approaches failed
+        return False, "All download approaches failed"
+
+    def _get_cookies_file_args(self):
+        """
+        Get the command arguments for using a cookies file.
+        
+        Returns:
+            List of command arguments for yt-dlp
+        """
+        # Check for YouTube cookies file in multiple locations
+        scripts_cookies_path = self.cookies_path if hasattr(self, 'cookies_path') else None
+        repo_cookies_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(__file__)))), "youtube.cookies")
+        render_cookies_path = "/etc/secrets/youtube.cookies"
+        
+        # Try scripts directory first, then Render secrets, then repo location
+        if scripts_cookies_path and os.path.exists(scripts_cookies_path):
+            cookies_path = scripts_cookies_path
+            logger.info(f"Using YouTube cookies from scripts directory: {cookies_path}")
+        elif os.path.exists(render_cookies_path):
+            cookies_path = render_cookies_path
+            logger.info(f"Using YouTube cookies from Render secrets: {cookies_path}")
+        elif os.path.exists(repo_cookies_path):
+            cookies_path = repo_cookies_path
+            logger.info(f"Using YouTube cookies from repository: {cookies_path}")
+        else:
+            logger.warning("YouTube cookies file not found. Download may fail due to bot detection.")
+            return []
+        
+        # Fix cookie file format issues
+        fixed_cookies_path = self._fix_cookie_file(cookies_path)
+        if fixed_cookies_path:
+            cookies_path = fixed_cookies_path
+            logger.info(f"Using fixed cookie file: {cookies_path}")
+        
+        return ["--cookies", cookies_path]
+
+    def _fix_cookie_file(self, original_cookie_path):
+        """
+        Fix cookie file format issues by removing leading dots from domain names.
+        
+        Args:
+            original_cookie_path: Path to the original cookie file
+            
+        Returns:
+            Path to fixed cookie file or None if failed
+        """
+        if not os.path.exists(original_cookie_path):
+            return None
+            
+        try:
+            # Create a temporary fixed cookie file
+            fixed_cookie_path = f"{original_cookie_path}.fixed"
+            
+            with open(original_cookie_path, 'r') as infile, open(fixed_cookie_path, 'w') as outfile:
+                for line in infile:
+                    line = line.strip()
+                    if not line or line.startswith('#'):
+                        # Keep comments and empty lines as is
+                        outfile.write(line + '\n')
+                        continue
+                        
+                    # Split the cookie line by tabs
+                    parts = line.split('\t')
+                    if len(parts) >= 7:
+                        # Remove leading dot from domain if present
+                        if parts[0].startswith('.'):
+                            parts[0] = parts[0][1:]  # Remove the leading dot
+                        
+                        # Write the fixed line
+                        outfile.write('\t'.join(parts) + '\n')
+                    else:
+                        # Line doesn't have expected format, write as is
+                        outfile.write(line + '\n')
+            
+            # Set proper permissions on the fixed file
+            os.chmod(fixed_cookie_path, 0o600)
+            logger.info(f"Created fixed cookie file at {fixed_cookie_path}")
+            return fixed_cookie_path
+        except Exception as e:
+            logger.error(f"Error fixing cookie file: {e}")
+            return None
+            
     async def download(self, url: str, output_path: str, quality: str = None) -> AsyncGenerator[dict, None]:
         """
         Download a track or playlist from Spotify.
@@ -616,24 +821,6 @@ class SpotifyStrategy(DownloadStrategy):
         # Get quality from quality parameter
         quality_setting = quality or "high"
         
-        # Use the URL to extract the track or playlist ID
-        spotify_id = self._extract_spotify_id(url)
-        
-        # For playlists, create a dedicated directory
-        if is_playlist:
-            # Create a dedicated output directory for this playlist
-            output_dir = str(spotify_output_dir)
-            output_template = str(spotify_output_dir / f"%(title)s_{self.task_id}.%(ext)s")
-            
-            # Log the playlist download
-            logger.info(f"Downloading Spotify playlist: {url} to {output_dir}")
-            yield {"status": "processing", "progress": 0, "detail": f"Starting download of Spotify playlist to {output_dir}"}
-        else:
-            # For single track
-            output_template = str(spotify_output_dir / f"track_%(title)s.%(ext)s")
-            logger.info(f"Downloading Spotify track: {url} to {output_template}")
-            yield {"status": "processing", "progress": 0, "detail": f"Starting download of Spotify track to {output_template}"}
-        
         # First yield a starting status
         yield {
             'status': 'downloading', 
@@ -662,9 +849,6 @@ class SpotifyStrategy(DownloadStrategy):
                 track_count = len(tracks)
                 logger.info(f"Found {track_count} tracks in playlist")
                 
-                # Extract spotify ID for directory organization
-                spotify_id = self._extract_spotify_id(url) or 'unknown'
-                
                 # Yield track list information
                 track_names = [f"{t.get('name', 'Unknown')} - {', '.join(t.get('artists', ['Unknown']))}" for t in tracks[:10]]
                 playlist_info = f"Playlist contains {track_count} tracks. First tracks: " + " | ".join(track_names[:3])
@@ -678,11 +862,10 @@ class SpotifyStrategy(DownloadStrategy):
                 }
             
             # Create a dedicated output directory
-            spotify_output_dir = os.path.join("/opt/render/project/src/server/downloads", f"spotify_{spotify_id}_{self.task_id}")
             os.makedirs(spotify_output_dir, exist_ok=True)
             logger.info(f"Using output directory: {spotify_output_dir}")
             
-            # DIRECT APPROACH: Process tracks directly with yt-dlp
+            # Process tracks directly with yt-dlp
             successful_tracks = []
             
             # Process each track in the playlist
@@ -693,9 +876,6 @@ class SpotifyStrategy(DownloadStrategy):
                     artist_str = ', '.join(artists)
                 else:
                     artist_str = str(artists)
-                
-                # Create search query
-                search_query = f"{track_name} {artist_str} audio"
                 
                 # Create safe filename
                 safe_name = re.sub(r'[^\w\-\.]', '_', f"{artist_str} - {track_name}")
@@ -715,142 +895,14 @@ class SpotifyStrategy(DownloadStrategy):
                 
                 logger.info(f"Downloading track {i+1}/{track_count}: {track_name} by {artist_str}")
                 
-                # Define a function to fix cookie file format issues
-                def fix_cookie_file(original_cookie_path):
-                    """Fix cookie file format issues by removing leading dots from domain names"""
-                    if not os.path.exists(original_cookie_path):
-                        return None
-                        
-                    try:
-                        # Create a temporary fixed cookie file
-                        fixed_cookie_path = f"{original_cookie_path}.fixed"
-                        
-                        with open(original_cookie_path, 'r') as infile, open(fixed_cookie_path, 'w') as outfile:
-                            for line in infile:
-                                line = line.strip()
-                                if not line or line.startswith('#'):
-                                    # Keep comments and empty lines as is
-                                    outfile.write(line + '\n')
-                                    continue
-                                    
-                                # Split the cookie line by tabs
-                                parts = line.split('\t')
-                                if len(parts) >= 7:
-                                    # Remove leading dot from domain if present
-                                    if parts[0].startswith('.'):
-                                        parts[0] = parts[0][1:]  # Remove the leading dot
-                                    
-                                    # Write the fixed line
-                                    outfile.write('\t'.join(parts) + '\n')
-                                else:
-                                    # Line doesn't have expected format, write as is
-                                    outfile.write(line + '\n')
-                        
-                        # Set proper permissions on the fixed file
-                        os.chmod(fixed_cookie_path, 0o600)
-                        logger.info(f"Created fixed cookie file at {fixed_cookie_path}")
-                        return fixed_cookie_path
-                    except Exception as e:
-                        logger.error(f"Error fixing cookie file: {e}")
-                        return None
-                
-                # Define a function to attempt download with different cookie configurations
-                async def attempt_download(use_cookies=False, no_cookies=False):
-                    try:
-                        cmd = [
-                            "yt-dlp",
-                            f"ytsearch1:{search_query}",
-                            "-x", "--audio-format", "mp3",
-                            "--audio-quality", "192" if quality_setting != "high" else "320",
-                            "-o", track_path,
-                            "--no-playlist",
-                            "--user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
-                            "--socket-timeout", "60",
-                            "--retry-sleep", "3",
-                            "--retries", "5",
-                            "--geo-bypass"
-                        ]
-                        
-                        # Add cookie handling based on the mode
-                        if no_cookies:
-                            cmd.append("--no-cookies")
-                            logger.info("Attempting download with --no-cookies flag")
-                        elif use_cookies:
-                            # Check for YouTube cookies file in multiple locations
-                            scripts_cookies_path = self.cookies_path if hasattr(self, 'cookies_path') else None
-                            repo_cookies_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(__file__)))), "youtube.cookies")
-                            render_cookies_path = "/etc/secrets/youtube.cookies"
-                            
-                            # Try scripts directory first, then Render secrets, then repo location
-                            if scripts_cookies_path and os.path.exists(scripts_cookies_path):
-                                cookies_path = scripts_cookies_path
-                                logger.info(f"Using YouTube cookies from scripts directory: {cookies_path}")
-                            elif os.path.exists(render_cookies_path):
-                                cookies_path = render_cookies_path
-                                logger.info(f"Using YouTube cookies from Render secrets: {cookies_path}")
-                            elif os.path.exists(repo_cookies_path):
-                                cookies_path = repo_cookies_path
-                                logger.info(f"Using YouTube cookies from repository: {cookies_path}")
-                            else:
-                                cookies_path = None
-                                logger.warning("YouTube cookies file not found. Download may fail due to bot detection.")
-                            
-                            if cookies_path:
-                                # Fix cookie file format issues
-                                fixed_cookies_path = fix_cookie_file(cookies_path)
-                                if fixed_cookies_path:
-                                    cookies_path = fixed_cookies_path
-                                    logger.info(f"Using fixed cookie file: {cookies_path}")
-                                
-                                cmd.extend(["--cookies", cookies_path])
-                                logger.info(f"Attempting download with cookies from {cookies_path}")
-                        else:
-                            logger.info("Attempting download without cookie options")
-                        
-                        logger.info(f"Running yt-dlp command: {' '.join(cmd)}")
-                        
-                        process = await asyncio.create_subprocess_exec(
-                            *cmd,
-                            stdout=asyncio.subprocess.PIPE,
-                            stderr=asyncio.subprocess.PIPE
-                        )
-                        
-                        stdout, stderr = await process.communicate()
-                        
-                        if process.returncode == 0:
-                            logger.info(f"Successfully downloaded track: {track_path}")
-                            return True, None
-                        else:
-                            error_msg = stderr.decode()
-                            logger.warning(f"Download attempt failed: {error_msg}")
-                            return False, error_msg
-                    except Exception as e:
-                        logger.warning(f"Exception during download attempt: {str(e)}")
-                        return False, str(e)
-                        
-                # Try downloading with different cookie strategies
-                success = False
-                error_msg = None
-                
-                # Strategy 1: Try without any cookie options first
-                logger.info(f"Attempting download without cookies first for {track_name}")
-                success, error_msg = await attempt_download(use_cookies=False, no_cookies=False)
-                
-                # Strategy 2: If that fails, try with --no-cookies flag
-                if not success:
-                    logger.info(f"First attempt failed, trying with --no-cookies flag for {track_name}")
-                    success, error_msg = await attempt_download(use_cookies=False, no_cookies=True)
-                
-                # Strategy 3: As a last resort, try with cookies
-                if not success:
-                    logger.info(f"Second attempt failed, trying with cookies for {track_name}")
-                    success, error_msg = await attempt_download(use_cookies=True, no_cookies=False)
+                # Try downloading with enhanced method using cookies-from-browser
+                success, error_msg = await self.attempt_download(track_name, artist_str, track_path, quality_setting)
                 
                 if success:
                     logger.info(f"Successfully downloaded: {track_name}")
                     successful_tracks.append(track_path)
                 else:
-                    logger.error(f"Failed to download track: {error_msg}")
+                    logger.error(f"Failed to download track '{track_name}': {error_msg}")
                 
                 # Update progress after download attempt
                 progress_value = 10 + (i + 1) * ((90 - 10) / track_count)
@@ -863,8 +915,8 @@ class SpotifyStrategy(DownloadStrategy):
             # Create ZIP file with downloaded tracks
             if successful_tracks:
                 # Determine correct downloads directory for both local and render environments
-                if self.is_render:
-                    downloads_dir = "/opt/render/project/src/server/downloads"
+                if settings.IS_RENDER:
+                    downloads_dir = str(base_output_dir)
                 else:
                     # Use the downloads directory set in initialization for local dev
                     downloads_dir = self.downloads_dir
@@ -1007,4 +1059,4 @@ class SpotifyStrategy(DownloadStrategy):
                 
         except Exception as e:
             logger.error(f"Error in Spotify strategy: {e}", exc_info=True)
-            yield {"status": "error", "error": f"Spotify strategy error: {str(e)}"} 
+            yield {"status": "error", "error": f"Spotify strategy error: {str(e)}"}

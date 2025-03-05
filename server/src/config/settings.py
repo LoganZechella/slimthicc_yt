@@ -29,7 +29,7 @@ class Settings(BaseSettings):
     
     # Paths
     APP_TEMP_DIR: str = "tmp"  # Use a local temp directory instead of /app
-    CONFIG_DIR: str = "config"
+    CONFIG_DIR: str = "server/src/config"
     
     # API settings
     API_PREFIX: str = "/api"
@@ -98,8 +98,8 @@ class Settings(BaseSettings):
     SPOTIFY_CLIENT_SECRET: Optional[str] = os.getenv("SPOTIFY_CLIENT_SECRET", None)
     
     # YouTube settings
-    YOUTUBE_PO_TOKEN: Optional[str] = None
-    YOUTUBE_SESSION_TOKEN: Optional[str] = None
+    YOUTUBE_PO_TOKEN: Optional[str] = os.getenv("YOUTUBE_PO_TOKEN", None)
+    YOUTUBE_SESSION_TOKEN: Optional[str] = os.getenv("YOUTUBE_SESSION_TOKEN", None)
     YOUTUBE_COOKIE_FILE: Optional[str] = "youtube.cookies"
     
     # Strategy settings
@@ -114,7 +114,7 @@ class Settings(BaseSettings):
     # Download settings
     DOWNLOADS_DIR: Path = Path(os.getenv("DOWNLOADS_DIR", "downloads"))
     TEMP_DIR: Path = Path(os.getenv("TEMP_DIR", "temp"))
-    MAX_CONCURRENT_DOWNLOADS: int = int(os.getenv("MAX_CONCURRENT_DOWNLOADS", "3"))
+    MAX_CONCURRENT_DOWNLOADS: int = int(os.getenv("MAX_CONCURRENT_DOWNLOADS", "1"))
     
     # Render-specific settings
     RENDER_DATA_DIR: Path = Path("/opt/render/data")
