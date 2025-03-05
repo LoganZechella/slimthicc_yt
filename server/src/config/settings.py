@@ -194,13 +194,16 @@ class Settings(BaseSettings):
             logger.info("Running on Render, using Render data directory")
             # Create the Render data directory in a writable location
             try:
+                logger.info(f"Attempting to use Render data directory at: {self.RENDER_DATA_DIR}")
                 self.RENDER_DATA_DIR.mkdir(parents=True, exist_ok=True)
                 logger.info(f"Created Render data directory at: {self.RENDER_DATA_DIR}")
-            except PermissionError:
-                # Fallback to a directory in the current working directory if /data is not writable
+            except PermissionError as e:
+                logger.error(f"Permission error creating directory at {self.RENDER_DATA_DIR}: {str(e)}")
+                # Fallback to a directory in the current working directory if the configured path is not writable
                 self.RENDER_DATA_DIR = Path(os.getcwd()) / "render_data"
+                logger.warning(f"Using fallback directory: {self.RENDER_DATA_DIR}")
                 self.RENDER_DATA_DIR.mkdir(parents=True, exist_ok=True)
-                logger.warning(f"Could not create directory at original location, using fallback: {self.RENDER_DATA_DIR}")
+                logger.info(f"Created fallback Render data directory at: {self.RENDER_DATA_DIR}")
             
             # Set up subdirectories in the Render data directory
             self.DOWNLOADS_DIR = self.RENDER_DATA_DIR / "downloads"
@@ -208,11 +211,14 @@ class Settings(BaseSettings):
             self.SCRIPTS_DIR = self.RENDER_DATA_DIR / "scripts"
             
             # Create all subdirectories
-            self.DOWNLOADS_DIR.mkdir(parents=True, exist_ok=True)
-            self.TEMP_DIR.mkdir(parents=True, exist_ok=True)
-            self.SCRIPTS_DIR.mkdir(parents=True, exist_ok=True)
-            
-            logger.info(f"Using Render data directories: downloads={self.DOWNLOADS_DIR}, temp={self.TEMP_DIR}, scripts={self.SCRIPTS_DIR}")
+            try:
+                self.DOWNLOADS_DIR.mkdir(parents=True, exist_ok=True)
+                self.TEMP_DIR.mkdir(parents=True, exist_ok=True)
+                self.SCRIPTS_DIR.mkdir(parents=True, exist_ok=True)
+                logger.info(f"Using Render data directories: downloads={self.DOWNLOADS_DIR}, temp={self.TEMP_DIR}, scripts={self.SCRIPTS_DIR}")
+            except Exception as e:
+                logger.error(f"Error creating subdirectories: {str(e)}")
+                logger.warning("Will attempt to use directories as-is, which may cause issues if they don't exist")
         
         # Convert relative paths to absolute if needed
         if not self.DOWNLOADS_DIR.is_absolute():
@@ -230,7 +236,13 @@ class Settings(BaseSettings):
             
         # Convert cookie file path to absolute if specified
         if self.YOUTUBE_COOKIE_FILE and not Path(self.YOUTUBE_COOKIE_FILE).is_absolute():
-            self.YOUTUBE_COOKIE_FILE = str(Path.cwd() / self.YOUTUBE_COOKIE_FILE)
+            # If on Render, store cookies in the render_data directory
+            if self.IS_RENDER:
+                self.YOUTUBE_COOKIE_FILE = str(self.RENDER_DATA_DIR / "scripts" / Path(self.YOUTUBE_COOKIE_FILE).name)
+                logger.info(f"Using Render cookie file path: {self.YOUTUBE_COOKIE_FILE}")
+            else:
+                self.YOUTUBE_COOKIE_FILE = str(Path.cwd() / self.YOUTUBE_COOKIE_FILE)
+                logger.debug(f"Using absolute cookie file path: {self.YOUTUBE_COOKIE_FILE}")
             
         logger.info("Settings initialized successfully")
 

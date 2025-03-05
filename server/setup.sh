@@ -2,23 +2,30 @@
 
 echo "Setting up environment..."
 
+# Get current directory
+CURRENT_DIR=$(pwd)
+echo "Current directory: $CURRENT_DIR"
+
+# Define data directories
+if [ -d "/opt/render" ]; then
+  # On Render, use a directory relative to the current directory (which is 'server')
+  DATA_DIR="render_data"
+  echo "Running on Render, using data directory: $DATA_DIR"
+else
+  # Local development
+  DATA_DIR="render_data"
+  echo "Running locally, using data directory: $DATA_DIR"
+fi
+
 # Create required directories if they don't exist
-mkdir -p downloads
-mkdir -p temp
-mkdir -p tmp
-mkdir -p scripts
-mkdir -p render_data/downloads
-mkdir -p render_data/temp
-mkdir -p render_data/scripts
-mkdir -p chrome_profile
+mkdir -p $DATA_DIR/downloads
+mkdir -p $DATA_DIR/temp
+mkdir -p $DATA_DIR/scripts
+mkdir -p $DATA_DIR/tmp
+mkdir -p $DATA_DIR/chrome_profile
 
 # Set proper permissions
-chmod 755 downloads
-chmod 755 temp
-chmod 755 tmp
-chmod 755 scripts
-chmod -R 755 render_data
-chmod 755 chrome_profile
+chmod -R 755 $DATA_DIR
 
 # Create empty cookies file if it doesn't exist
 touch youtube.cookies
@@ -26,10 +33,8 @@ chmod 600 youtube.cookies
 
 # Copy YouTube cookies to persistent directory if it exists
 if [ -f youtube.cookies ]; then
-  cp youtube.cookies scripts/youtube.cookies
-  cp youtube.cookies render_data/scripts/youtube.cookies 2>/dev/null || true
-  chmod 600 scripts/youtube.cookies
-  chmod 600 render_data/scripts/youtube.cookies 2>/dev/null || true
+  cp youtube.cookies $DATA_DIR/scripts/youtube.cookies 2>/dev/null || true
+  chmod 600 $DATA_DIR/scripts/youtube.cookies 2>/dev/null || true
   echo "YouTube cookies copied to persistent storage"
 fi
 
@@ -41,16 +46,16 @@ if [ -d "/opt/render" ]; then
   echo "Detected Render.com environment, installing Chrome..."
   
   # Install Chrome dependencies
-  apt-get update
-  apt-get install -y wget gnupg
+  apt-get update || true
+  apt-get install -y wget gnupg || true
   
   # Add Chrome repository
-  wget -q -O - https://dl-ssl.google.com/linux/linux_signing_key.pub | apt-key add -
-  echo "deb [arch=amd64] http://dl.google.com/linux/chrome/deb/ stable main" >> /etc/apt/sources.list.d/google.list
+  wget -q -O - https://dl-ssl.google.com/linux/linux_signing_key.pub | apt-key add - || true
+  echo "deb [arch=amd64] http://dl.google.com/linux/chrome/deb/ stable main" >> /etc/apt/sources.list.d/google.list || true
   
   # Install Chrome
-  apt-get update
-  apt-get install -y google-chrome-stable
+  apt-get update || true
+  apt-get install -y google-chrome-stable || true
   
   # Verify Chrome installation
   CHROME_VERSION=$(google-chrome --version || echo "Chrome not installed")
@@ -58,25 +63,20 @@ if [ -d "/opt/render" ]; then
   
   # Create writable directories for Render
   echo "Setting up writable directories for Render..."
-  mkdir -p render_data/downloads render_data/temp render_data/scripts
-  chmod -R 755 render_data
-  echo "Created writable directories in render_data/"
+  mkdir -p $DATA_DIR/downloads $DATA_DIR/temp $DATA_DIR/scripts $DATA_DIR/tmp $DATA_DIR/chrome_profile
+  chmod -R 755 $DATA_DIR
+  echo "Created writable directories in $DATA_DIR"
 else
   echo "Not running on Render, skipping Chrome installation"
 fi
 
 # Add ffmpeg-downloader to ensure binary is available
 pip install ffmpeg-downloader
-python -m ffmpeg_downloader.entry_point
+python -m ffmpeg_downloader.entry_point || true
 
 # Export binary path to environment
 export PATH="$HOME/.ffmpeg-downloader/bin:$PATH"
 echo "PATH updated to include ffmpeg binaries: $PATH"
 echo "ffmpeg location: $(which ffmpeg || echo 'Not found')"
-
-# Generate a basic browser profile for cookies-from-browser
-echo "Setting up browser profile directories..."
-mkdir -p chrome_profile
-chmod 755 chrome_profile
 
 echo "Setup complete. Environment initialized with proper permissions."

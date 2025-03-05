@@ -793,14 +793,14 @@ class SpotifyStrategy(DownloadStrategy):
             }
             return
         
-        # Use the Render data directory if running on Render
-        if settings.IS_RENDER:
-            # Use the mounted disk for output
-            base_output_dir = Path(settings.RENDER_DATA_DIR) / "downloads"
-            logger.info(f"Using Render data directory for output: {base_output_dir}")
-        else:
+        # # Use the Render data directory if running on Render
+        # if settings.IS_RENDER:
+        #     # Use the mounted disk for output
+        #     base_output_dir = Path(settings.RENDER_DATA_DIR) / "downloads"
+        #     logger.info(f"Using Render data directory for output: {base_output_dir}")
+        # else:
             # Use the configured output directory for development
-            base_output_dir = Path(settings.DOWNLOADS_DIR)
+        base_output_dir = Path(settings.DOWNLOADS_DIR)
             
         # Create a dedicated output directory for this task
         spotify_output_dir = base_output_dir / f"spotify_{spotify_id}_{self.task_id}"
