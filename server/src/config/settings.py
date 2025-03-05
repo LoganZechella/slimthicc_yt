@@ -117,10 +117,10 @@ class Settings(BaseSettings):
     MAX_CONCURRENT_DOWNLOADS: int = int(os.getenv("MAX_CONCURRENT_DOWNLOADS", "1"))
     
     # Render-specific settings
-    RENDER_DATA_DIR: Path = Path("/opt/render/data")
+    RENDER_DATA_DIR: Path = Path("/data")
     
     # Scripts directory
-    SCRIPTS_DIR: Path = Path("/opt/render/scripts")
+    SCRIPTS_DIR: Path = Path("/data/scripts")
     
     model_config = SettingsConfigDict(
         env_file=".env",

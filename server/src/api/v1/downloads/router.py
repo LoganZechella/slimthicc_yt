@@ -20,6 +20,7 @@ import io
 import time
 import asyncio
 from fastapi.websockets import WebSocketState
+from src.config import settings
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -54,11 +55,8 @@ async def cleanup_after_download(zip_path: str, mp3_file_paths: List[str]):
         # Wait longer to ensure the client has time to download the ZIP
         await asyncio.sleep(wait_time)
         
-        # Determine Docker vs local environment
-        in_docker = os.path.exists('/.dockerenv')
-        container_path = '/app/downloads/'
-        host_path = 'server/downloads/'
-        base_path = container_path if in_docker else host_path
+        # Use Render path for downloads
+        base_path = '/project/src/server/downloads/'
         downloads_dir = Path(base_path)
         
         # Collect task-specific directories to check for cleanup
@@ -214,21 +212,14 @@ async def download_file(task_id: str, background_tasks: BackgroundTasks):
         
         logger.info(f"Processing download for task: {task_id}, reported path: {task.output_path}")
         
-        # Fix for Spotify playlists which may specify a path in /app/downloads
+        # Fix for Spotify playlists which may specify a path in the downloads directory
         # Check if this is a Spotify task with a special directory format
         if hasattr(task, 'spotify_output_dir') and task.spotify_output_dir:
-            # Use the spotify_output_dir from the task, which should now be using Render paths
+            # Use the spotify_output_dir from the task, which should be using Render paths
             logger.info(f"Found Spotify task with output dir: {task.spotify_output_dir}")
             
-            # Use the direct path from the task (should already be converted)
+            # Use the direct path from the task
             file_path = Path(task.spotify_output_dir)
-            
-            # Double-check if it's a Docker path and convert if needed
-            if str(file_path).startswith('/app/'):
-                # Convert Docker path to Render path
-                file_path = Path(str(file_path).replace('/app/', '/opt/render/project/src/server/'))
-                logger.info(f"Converted Docker path to Render path: {file_path}")
-            
             logger.info(f"Using Spotify output directory: {file_path}")
             
             # If it's a directory, we need to create a ZIP of all files
@@ -243,17 +234,7 @@ async def download_file(task_id: str, background_tasks: BackgroundTasks):
                 logger.info(f"Found {len(audio_files)} audio files in directory")
                 
                 if not audio_files:
-                    # Try to check the Docker path location if nothing found in Render path
-                    docker_path = Path(str(file_path).replace('/opt/render/project/src/server/', '/app/'))
-                    logger.warning(f"No files found at {file_path}, trying to check if files exist at Docker path: {docker_path}")
-                    
-                    # Try the download process output
-                    if hasattr(task, 'download_process_output') and task.download_process_output:
-                        logger.info(f"Checking download process output for file paths: {task.download_process_output}")
-                        
-                    # Additional debugging for task
-                    logger.info(f"Task details: {task.model_dump()}")
-                    
+                    logger.warning(f"No files found at {file_path}")
                     raise HTTPException(status_code=404, detail="No audio files found in the download directory. Please try downloading again.")
                 
                 # If only one file, return it directly
@@ -262,7 +243,7 @@ async def download_file(task_id: str, background_tasks: BackgroundTasks):
                     logger.info(f"Only one audio file found, returning it directly: {file_path}")
                 else:
                     # Create a ZIP file for multiple files
-                    zip_path = Path(f"/opt/render/project/src/server/downloads/{task_id}_playlist.zip")
+                    zip_path = Path(f"/project/src/server/downloads/{task_id}_playlist.zip")
                     logger.info(f"Creating ZIP file for multiple audio files: {zip_path}")
                     
                     # Create a ZIP file containing all audio files
@@ -278,12 +259,14 @@ async def download_file(task_id: str, background_tasks: BackgroundTasks):
             
         # For standard downloads with output_path specified
         elif task.output_path:
-            # Check different path variants
+            # Check for various possible file formats
             possible_paths = [
-                Path(task.output_path),  # Try the exact path
-                Path(f"/opt/render/project/src/server/downloads/{task_id}.mp3"),  # Render MP3
-                Path(f"/opt/render/project/src/server/downloads/{task_id}.m4a"),  # Render M4A
-                Path(f"/opt/render/project/src/server/downloads/{task_id}.zip")   # Render ZIP
+                Path(f"{settings.DOWNLOADS_DIR}/{task_id}.mp3"),  # Local MP3
+                Path(f"{settings.DOWNLOADS_DIR}/{task_id}.m4a"),  # Local M4A
+                Path(f"{settings.DOWNLOADS_DIR}/{task_id}.zip"),  # Local ZIP
+                Path(f"/project/src/server/downloads/{task_id}.mp3"),  # Render MP3
+                Path(f"/project/src/server/downloads/{task_id}.m4a"),  # Render M4A
+                Path(f"/project/src/server/downloads/{task_id}.zip")   # Render ZIP
             ]
             
             # Find the first existing path

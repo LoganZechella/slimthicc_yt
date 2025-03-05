@@ -66,11 +66,12 @@ else:
     
     # Try to detect the project root (either /opt/render/project or wherever the git repo was cloned)
     potential_roots = [
-        Path('/opt/render/project'),          # Standard Render path
-        Path('/opt/render/project/src'),      # Potential structure
-        Path('/opt/render/project/server'),   # Another potential structure
-        Path(__file__).resolve().parent.parent.parent.parent.parent,  # Move up from current file
-        Path(os.getcwd())                     # Current working directory
+        Path(os.getcwd()),                # Current directory
+        Path(os.getcwd()).parent,         # Parent directory
+        Path(os.getcwd()).parent.parent,  # Grandparent directory
+        Path("/project"),                 # Standard Render path
+        Path("/project/src"),             # Potential structure
+        Path("/project/server"),          # Another potential structure
     ]
     
     for root in potential_roots:

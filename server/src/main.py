@@ -24,16 +24,19 @@ try:
     # Check for server directory (might be in different locations)
     server_dir = None
     
-    # Try to locate the main project directory
-    possible_project_dirs = [
-        Path(os.getcwd()),                   # Current directory
-        Path("/opt/render/project"),         # Root Render project dir
-        Path("/opt/render/project/src"),     # Possible subdirectory on Render
-        Path("/opt/render/project/server"),  # Another possible subdirectory
+    # Try to detect the project root (either /opt/render/project or wherever the git repo was cloned)
+    potential_roots = [
+        Path.cwd(),                        # Current directory
+        Path.cwd().parent,                 # Parent directory
+        Path.cwd().parent.parent,          # Grandparent directory
+        Path("/project"),                  # Root Render project dir
+        Path("/project/src"),              # Possible subdirectory on Render
+        Path("/project/server"),           # Another possible subdirectory
+        # Add more potential roots if needed
     ]
     
     # Try each possible project directory
-    for project_dir in possible_project_dirs:
+    for project_dir in potential_roots:
         print(f"Checking potential project directory: {project_dir}")
         if not project_dir.exists():
             print(f"  Directory doesn't exist")
@@ -114,6 +117,7 @@ from fastapi.responses import JSONResponse
 import traceback
 import time
 import asyncio
+from contextlib import asynccontextmanager
 
 # Configure logging
 logging.basicConfig(
@@ -128,12 +132,73 @@ logger = logging.getLogger(__name__)
 # Ensure .env is loaded
 load_dotenv()
 
+# Define lifespan context manager to replace on_event handlers
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Startup logic (previously in startup_db_client)
+    # Log important environment variables (redacted for security)
+    logger.info("Application starting with configuration:")
+    logger.info(f"API base URL: {settings.API_V1_STR}")
+    logger.info(f"CORS origins: {settings.CORS_ORIGINS}")
+    
+    # Configure ffmpeg wrapper with binary path if available
+    ffmpeg_binary_path = Path(os.path.expanduser("~/.ffmpeg-downloader/bin/ffmpeg"))
+    if ffmpeg_binary_path.exists():
+        logger.info(f"Using ffmpeg binary at: {ffmpeg_binary_path}")
+        os.environ["FFMPEG_BINARY"] = str(ffmpeg_binary_path)
+    else:
+        # Try to find ffmpeg in PATH
+        import subprocess
+        try:
+            ffmpeg_path = subprocess.check_output(["which", "ffmpeg"]).decode().strip()
+            logger.info(f"Using ffmpeg from PATH at: {ffmpeg_path}")
+            os.environ["FFMPEG_BINARY"] = ffmpeg_path
+        except subprocess.CalledProcessError:
+            logger.warning("ffmpeg not found in PATH, some functionality might be limited")
+    
+    # Log Spotify credential presence
+    spotify_client_id = settings.SPOTIFY_CLIENT_ID or os.getenv("SPOTIPY_CLIENT_ID")
+    spotify_client_secret = settings.SPOTIFY_CLIENT_SECRET or os.getenv("SPOTIPY_CLIENT_SECRET")
+    
+    logger.info(f"Spotify credentials configured: {bool(spotify_client_id and spotify_client_secret)}")
+    
+    # Log directories
+    logger.info(f"Downloads directory: {settings.DOWNLOADS_DIR}")
+    logger.info(f"Temp directory: {settings.TEMP_DIR}")
+    
+    # Log Render data directory status if on Render
+    if settings.IS_RENDER:
+        render_data_dir = settings.RENDER_DATA_DIR
+        logger.info(f"Render data directory: {render_data_dir}")
+        logger.info(f"Render data directory exists: {render_data_dir.exists()}")
+        logger.info(f"Render data directory is writable: {os.access(str(render_data_dir), os.W_OK)}")
+        
+        # List contents if directory exists
+        if render_data_dir.exists():
+            try:
+                contents = list(render_data_dir.iterdir())
+                logger.info(f"Render data directory contents: {contents}")
+            except Exception as e:
+                logger.error(f"Error listing Render data directory contents: {e}")
+    
+    # Connect to MongoDB
+    await connect_to_mongo()
+    logger.info("Successfully connected to MongoDB")
+    
+    yield  # This is where the app runs
+    
+    # Shutdown logic (previously in shutdown_db_client)
+    await close_mongo_connection()
+    logger.info("Disconnected from MongoDB")
+
+# Update FastAPI app initialization to use the lifespan context manager
 app = FastAPI(
     title=settings.PROJECT_NAME,
     description="Music Download API",
     version=settings.VERSION,
     openapi_url=f"{settings.API_V1_STR}/openapi.json",
-    debug=settings.DEBUG
+    debug=settings.DEBUG,
+    lifespan=lifespan
 )
 
 # Log CORS settings
@@ -439,62 +504,6 @@ async def health_check():
     Health check endpoint for monitoring services
     """
     return {"status": "healthy", "version": settings.VERSION}
-
-@app.on_event("startup")
-async def startup_db_client():
-    # Log important environment variables (redacted for security)
-    logger.info("Application starting with configuration:")
-    logger.info(f"API base URL: {settings.API_V1_STR}")
-    logger.info(f"CORS origins: {settings.CORS_ORIGINS}")
-    
-    # Configure ffmpeg wrapper with binary path if available
-    ffmpeg_binary_path = Path(os.path.expanduser("~/.ffmpeg-downloader/bin/ffmpeg"))
-    if ffmpeg_binary_path.exists():
-        logger.info(f"Using ffmpeg binary at: {ffmpeg_binary_path}")
-        os.environ["FFMPEG_BINARY"] = str(ffmpeg_binary_path)
-    else:
-        # Try to find ffmpeg in PATH
-        import subprocess
-        try:
-            ffmpeg_path = subprocess.check_output(["which", "ffmpeg"]).decode().strip()
-            logger.info(f"Using ffmpeg from PATH at: {ffmpeg_path}")
-            os.environ["FFMPEG_BINARY"] = ffmpeg_path
-        except subprocess.CalledProcessError:
-            logger.warning("ffmpeg not found in PATH, some functionality might be limited")
-    
-    # Log Spotify credential presence
-    spotify_client_id = settings.SPOTIFY_CLIENT_ID or os.getenv("SPOTIPY_CLIENT_ID")
-    spotify_client_secret = settings.SPOTIFY_CLIENT_SECRET or os.getenv("SPOTIPY_CLIENT_SECRET")
-    
-    logger.info(f"Spotify credentials configured: {bool(spotify_client_id and spotify_client_secret)}")
-    
-    # Log directories
-    logger.info(f"Downloads directory: {settings.DOWNLOADS_DIR}")
-    logger.info(f"Temp directory: {settings.TEMP_DIR}")
-    
-    # Log Render data directory status if on Render
-    if settings.IS_RENDER:
-        render_data_dir = settings.RENDER_DATA_DIR
-        logger.info(f"Render data directory: {render_data_dir}")
-        logger.info(f"Render data directory exists: {render_data_dir.exists()}")
-        logger.info(f"Render data directory is writable: {os.access(str(render_data_dir), os.W_OK)}")
-        
-        # List contents if directory exists
-        if render_data_dir.exists():
-            try:
-                contents = list(render_data_dir.iterdir())
-                logger.info(f"Render data directory contents: {contents}")
-            except Exception as e:
-                logger.error(f"Error listing Render data directory contents: {e}")
-    
-    # Connect to MongoDB
-    await connect_to_mongo()
-    logger.info("Successfully connected to MongoDB")
-
-@app.on_event("shutdown")
-async def shutdown_db_client():
-    await close_mongo_connection()
-    logger.info("Disconnected from MongoDB")
 
 @app.get("/")
 async def root():

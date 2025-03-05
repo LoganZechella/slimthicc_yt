@@ -439,10 +439,11 @@ class DownloadTaskManager:
                         # Handling Spotify playlists that return track details in progress updates
                         if is_spotify_url and progress_details:
                             # Check for successful file paths mentions
-                            if 'tracks saved to' in progress_details.lower() and '/app/downloads' in progress_details:
+                            if 'tracks saved to' in progress_details.lower():
                                 logger.info(f"Found Spotify output directory in progress details: {progress_details}")
                                 # Store this information for later
-                                spotify_output_dir = progress_details.split('saved to')[-1].strip()
+                                # Use the persistent data directory on Render
+                                spotify_output_dir = "/project/src/server/downloads"
                                 await self.update_task(
                                     task,
                                     spotify_output_dir=spotify_output_dir,
@@ -504,21 +505,19 @@ class DownloadTaskManager:
                                     # Check the output message for file paths
                                     files_found = False
                                     
-                                    # Look for the Spotify file directory
-                                    spotify_output_dir_docker = "/app/downloads"
-                                    spotify_output_dir = "/opt/render/project/src/server/downloads"
+                                    # Set the Spotify file directory for Render
+                                    spotify_output_dir = "/project/src/server/downloads"
                                     
-                                    # Log the possible success differently for Spotify
+                                    # Log the success for Spotify
                                     logger.info(f"Spotify download reported complete. Files saved to: {spotify_output_dir}")
                                     
-                                    # Include both paths for compatibility
+                                    # Include success message
                                     success_message = f"Download completed successfully. Click download to access files."
                                     
                                     await self.update_task(
                                         task,
                                         status=DownloadStatus.COMPLETE,
                                         spotify_output_dir=spotify_output_dir,  # Use the Render path
-                                        docker_spotify_output_dir=spotify_output_dir_docker,  # Keep Docker path for reference
                                         error=None,  # No error, successful download
                                         output_path=f"{spotify_output_dir}/playlist_files.mp3"  # Use Render path
                                     )

@@ -275,7 +275,7 @@ class DownloadManager:
             'retries': 10,
             'fragment_retries': 10,
             'http_headers': headers,
-            'cookiefile': '/app/youtube.cookies',
+            'cookiefile': '/data/scripts/youtube.cookies',
             'socket_timeout': 30,
             'extractor_args': extractor_args,
             'concurrent_fragment_downloads': 8,  # Speed up downloads
@@ -296,7 +296,7 @@ class DownloadManager:
     async def _verify_cookies(self):
         """Verify and refresh YouTube cookies if needed"""
         try:
-            cookie_file = Path('/app/youtube.cookies')
+            cookie_file = Path('/data/scripts/youtube.cookies')
             if not cookie_file.exists():
                 logger.warning("Cookie file not found")
                 return False

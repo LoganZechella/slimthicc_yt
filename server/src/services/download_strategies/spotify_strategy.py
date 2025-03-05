@@ -38,7 +38,7 @@ class SpotifyStrategy(DownloadStrategy):
         # Set up organized directory structure
         if is_render:
             # Use Render's persistent storage for all data
-            render_root = "/opt/render/project/src/server"
+            render_root = "/project/src/server"
             data_root = str(settings.RENDER_DATA_DIR)
             
             # Create organized directory structure
@@ -158,7 +158,8 @@ class SpotifyStrategy(DownloadStrategy):
             logger.warning(f"Spotify extractor script not found at {self.extractor_script}")
             # Try alternate locations
             alt_paths = [
-                "/app/spotify_track_extractor.py",
+                "/project/src/server/spotify_track_extractor.py",
+                "/data/scripts/spotify_track_extractor.py",
                 "spotify_track_extractor.py",
                 os.path.join(os.getcwd(), "spotify_track_extractor.py")
             ]
@@ -172,7 +173,8 @@ class SpotifyStrategy(DownloadStrategy):
             logger.warning(f"Spotify downloader script not found at {self.downloader_script}")
             # Try alternate locations
             alt_paths = [
-                "/app/download_spotify_direct.py",
+                "/project/src/server/download_spotify_direct.py",
+                "/data/scripts/download_spotify_direct.py",
                 "download_spotify_direct.py",
                 os.path.join(os.getcwd(), "download_spotify_direct.py")
             ]

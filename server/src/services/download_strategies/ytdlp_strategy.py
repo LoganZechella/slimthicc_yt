@@ -46,7 +46,8 @@ class YtdlpStrategy(DownloadStrategy):
             # Try multiple locations for the cookie file
             possible_paths = [
                 os.path.join(os.getcwd(), self.cookie_file_path),
-                f"/app/{self.cookie_file_path}",
+                os.path.join("/data/scripts", self.cookie_file_path),
+                os.path.join("/project/src/server", self.cookie_file_path),
                 os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(__file__)))), self.cookie_file_path)
             ]
             

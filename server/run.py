@@ -16,18 +16,19 @@ def safe_list_dir(path):
     except Exception as e:
         return f"Error listing directory {path}: {e}"
 
-# Try all possible project root locations
-possible_roots = [
-    Path(os.getcwd()),                  # Current directory
-    Path(os.getcwd()).parent,           # Parent of current directory
-    Path("/opt/render/project"),        # Root Render directory
-    Path("/opt/render/project/src"),    # Potential alternate structure 
-    Path("/opt/render/project/server"), # Another potential structure
+# Try to detect the project root
+potential_roots = [
+    Path(os.getcwd()),               # Current directory
+    Path(os.getcwd()).parent,        # Parent directory
+    Path(os.getcwd()).parent.parent, # Grandparent directory
+    Path("/project"),                # Root Render directory
+    Path("/project/src"),            # Potential alternate structure
+    Path("/project/server"),         # Another potential structure
 ]
 
 print("Analyzing possible project roots:")
 server_dir = None
-for root in possible_roots:
+for root in potential_roots:
     print(f"Checking {root}:")
     print(f"  Exists: {root.exists()}")
     print(f"  Is directory: {root.is_dir() if root.exists() else 'N/A'}")
