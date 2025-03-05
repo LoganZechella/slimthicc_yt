@@ -29,7 +29,7 @@ class Settings(BaseSettings):
     
     # Paths
     APP_TEMP_DIR: str = "tmp"  # Use a local temp directory instead of /app
-    CONFIG_DIR: str = "server/src/config"
+    CONFIG_DIR: str = "/src/config"
     
     # API settings
     API_PREFIX: str = "/api"

@@ -2,10 +2,9 @@ services:
   - type: web
     name: slimthicc_yt
     runtime: python
-    buildCommand: cd server && pip install -r requirements.txt && bash setup.sh
+    buildCommand: pip install -r requirements.txt && chmod +x setup.sh && ./setup.sh
     startCommand: >
       cd server && 
-      PYTHONPATH=/project 
       PATH="$HOME/.ffmpeg-downloader/bin:$PATH" 
       gunicorn -k uvicorn.workers.UvicornWorker src.main:app --bind 0.0.0.0:$PORT
     envVars:
