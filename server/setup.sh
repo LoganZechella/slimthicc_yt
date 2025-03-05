@@ -6,19 +6,19 @@ echo "Setting up environment..."
 mkdir -p downloads
 mkdir -p temp
 mkdir -p tmp
-mkdir -p /data/scripts
-mkdir -p /data/temp
-mkdir -p /data/downloads
-mkdir -p /data/chrome_profile
+mkdir -p scripts
+mkdir -p render_data/downloads
+mkdir -p render_data/temp
+mkdir -p render_data/scripts
+mkdir -p chrome_profile
 
 # Set proper permissions
 chmod 755 downloads
 chmod 755 temp
 chmod 755 tmp
-chmod 755 /data/scripts
-chmod 755 /data/temp
-chmod 755 /data/downloads
-chmod 755 /data/chrome_profile
+chmod 755 scripts
+chmod -R 755 render_data
+chmod 755 chrome_profile
 
 # Create empty cookies file if it doesn't exist
 touch youtube.cookies
@@ -26,8 +26,10 @@ chmod 600 youtube.cookies
 
 # Copy YouTube cookies to persistent directory if it exists
 if [ -f youtube.cookies ]; then
-  cp youtube.cookies /data/scripts/youtube.cookies
-  chmod 600 /data/scripts/youtube.cookies
+  cp youtube.cookies scripts/youtube.cookies
+  cp youtube.cookies render_data/scripts/youtube.cookies 2>/dev/null || true
+  chmod 600 scripts/youtube.cookies
+  chmod 600 render_data/scripts/youtube.cookies 2>/dev/null || true
   echo "YouTube cookies copied to persistent storage"
 fi
 
@@ -53,6 +55,12 @@ if [ -d "/opt/render" ]; then
   # Verify Chrome installation
   CHROME_VERSION=$(google-chrome --version || echo "Chrome not installed")
   echo "Chrome version: $CHROME_VERSION"
+  
+  # Create writable directories for Render
+  echo "Setting up writable directories for Render..."
+  mkdir -p render_data/downloads render_data/temp render_data/scripts
+  chmod -R 755 render_data
+  echo "Created writable directories in render_data/"
 else
   echo "Not running on Render, skipping Chrome installation"
 fi
@@ -68,7 +76,7 @@ echo "ffmpeg location: $(which ffmpeg || echo 'Not found')"
 
 # Generate a basic browser profile for cookies-from-browser
 echo "Setting up browser profile directories..."
-mkdir -p /data/chrome_profile
-chmod 755 /data/chrome_profile
+mkdir -p chrome_profile
+chmod 755 chrome_profile
 
 echo "Setup complete. Environment initialized with proper permissions."

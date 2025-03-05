@@ -5,8 +5,13 @@ services:
     buildCommand: pip install -r requirements.txt && chmod +x setup.sh && ./setup.sh
     startCommand: >
       cd server && 
+      mkdir -p render_data/downloads render_data/temp render_data/scripts && 
+      chmod -R 755 render_data && 
+      export PATH="$HOME/.ffmpeg-downloader/bin:$PATH" && 
       PATH="$HOME/.ffmpeg-downloader/bin:$PATH" 
       gunicorn -k uvicorn.workers.UvicornWorker src.main:app --bind 0.0.0.0:$PORT
     envVars:
       - key: PYTHONUNBUFFERED
         value: "1"
+      - key: RENDER_DATA_DIR
+        value: "render_data"

@@ -100,7 +100,7 @@ class Settings(BaseSettings):
     # YouTube settings
     YOUTUBE_PO_TOKEN: Optional[str] = os.getenv("YOUTUBE_PO_TOKEN", None)
     YOUTUBE_SESSION_TOKEN: Optional[str] = os.getenv("YOUTUBE_SESSION_TOKEN", None)
-    YOUTUBE_COOKIE_FILE: Optional[str] = "youtube.cookies"
+    YOUTUBE_COOKIE_FILE: Optional[str] = "youtube.cookies.fixed"
     
     # Strategy settings
     STRATEGY_MAX_FAILURES: int = 3
@@ -117,10 +117,10 @@ class Settings(BaseSettings):
     MAX_CONCURRENT_DOWNLOADS: int = int(os.getenv("MAX_CONCURRENT_DOWNLOADS", "1"))
     
     # Render-specific settings
-    RENDER_DATA_DIR: Path = Path("/data")
+    RENDER_DATA_DIR: Path = Path(os.getenv("RENDER_DATA_DIR", os.path.join(os.getcwd(), "render_data")))
     
     # Scripts directory
-    SCRIPTS_DIR: Path = Path("/data/scripts")
+    SCRIPTS_DIR: Path = Path(os.getenv("SCRIPTS_DIR", "scripts"))
     
     model_config = SettingsConfigDict(
         env_file=".env",
@@ -192,7 +192,15 @@ class Settings(BaseSettings):
         # Use Render data directory if running on Render
         if self.IS_RENDER:
             logger.info("Running on Render, using Render data directory")
-            self.RENDER_DATA_DIR.mkdir(parents=True, exist_ok=True)
+            # Create the Render data directory in a writable location
+            try:
+                self.RENDER_DATA_DIR.mkdir(parents=True, exist_ok=True)
+                logger.info(f"Created Render data directory at: {self.RENDER_DATA_DIR}")
+            except PermissionError:
+                # Fallback to a directory in the current working directory if /data is not writable
+                self.RENDER_DATA_DIR = Path(os.getcwd()) / "render_data"
+                self.RENDER_DATA_DIR.mkdir(parents=True, exist_ok=True)
+                logger.warning(f"Could not create directory at original location, using fallback: {self.RENDER_DATA_DIR}")
             
             # Set up subdirectories in the Render data directory
             self.DOWNLOADS_DIR = self.RENDER_DATA_DIR / "downloads"
