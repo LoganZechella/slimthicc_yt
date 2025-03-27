@@ -31,19 +31,11 @@ def is_raspberry_pi():
 
 def get_ffmpeg_path():
     """Get appropriate FFmpeg path based on platform"""
-    base_path = get_base_path()
-    
-    # On Raspberry Pi, prefer system FFmpeg
+    # For Raspberry Pi, always use the system path
     if is_raspberry_pi():
-        # Check if system FFmpeg exists
-        try:
-            subprocess.run(['ffmpeg', '-version'], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-            return 'ffmpeg'  # Use system FFmpeg
-        except:
-            # Fall back to bundled ARM binary if available
-            arm_path = os.path.join(base_path, 'ffmpeg_bin', 'arm64', 'ffmpeg')
-            if os.path.exists(arm_path) and os.access(arm_path, os.X_OK):
-                return arm_path
+        return '/usr/bin/ffmpeg'
+    
+    base_path = get_base_path()
     
     # For non-Raspberry Pi ARM64
     if platform.machine() == 'arm64' or platform.machine() == 'aarch64':
@@ -53,6 +45,23 @@ def get_ffmpeg_path():
     
     # Default for x86_64
     return os.path.join(base_path, 'ffmpeg_bin', 'x86_64', 'ffmpeg')
+
+def get_ffprobe_path():
+    """Get appropriate FFprobe path based on platform"""
+    # For Raspberry Pi, always use the system path
+    if is_raspberry_pi():
+        return '/usr/bin/ffprobe'
+    
+    base_path = get_base_path()
+    
+    # For non-Raspberry Pi ARM64
+    if platform.machine() == 'arm64' or platform.machine() == 'aarch64':
+        arm_path = os.path.join(base_path, 'ffmpeg_bin', 'arm64', 'ffprobe')
+        if os.path.exists(arm_path):
+            return arm_path
+    
+    # Default for x86_64
+    return os.path.join(base_path, 'ffmpeg_bin', 'x86_64', 'ffprobe')
 
 def get_app_data_dir():
     """Get platform-specific data directory"""

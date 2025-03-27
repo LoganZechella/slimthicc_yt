@@ -183,6 +183,10 @@ class DownloadWorker(QThread):
     def get_ffmpeg_path(self):
         # Use platform utils for ffmpeg path
         return platform_utils.get_ffmpeg_path()
+        
+    def get_ffprobe_path(self):
+        # Use platform utils for ffprobe path
+        return platform_utils.get_ffprobe_path()
 
     def download_video(self, url, title):
         def progress_hook(d):
@@ -270,6 +274,10 @@ class DownloadWorker(QThread):
         filename = "".join(c for c in filename if c.isalnum() or c in " -_()[]{}.,")
         filename = filename.strip()
 
+        # Set up options with explicit ffmpeg and ffprobe paths
+        ffmpeg_path = self.get_ffmpeg_path()
+        ffprobe_path = self.get_ffprobe_path()
+        
         ydl_opts = {
             'format': 'bestaudio/best',
             'postprocessors': [{
@@ -278,8 +286,10 @@ class DownloadWorker(QThread):
                 'preferredquality': '192',
             }],
             'outtmpl': os.path.join(self.download_dir, filename + '.%(ext)s'),
-            'ffmpeg_location': self.get_ffmpeg_path(),
             'progress_hooks': [progress_hook],
+            'ffmpeg_location': ffmpeg_path,
+            'ffprobe_location': ffprobe_path,
+            'prefer_ffmpeg': True,
             'quiet': True,
             'no_warnings': True,
         }

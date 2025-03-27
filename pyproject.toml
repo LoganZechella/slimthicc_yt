@@ -8,13 +8,12 @@ version = "0.1.0"
 description = "YouTube and Spotify playlist downloader"
 readme = "README.md"
 requires-python = ">=3.7"
-license = {text = "MIT"}
+license = "MIT"
 authors = [
     {name = "SlimThicc Developer"}
 ]
 dependencies = [
     "yt-dlp",
-    "PyQt5",
     "spotipy",
     "requests",
     "mutagen",
@@ -27,4 +26,4 @@ dev = [
 ]
 
 [tool.setuptools]
-packages = ["platform_utils"] 
+py-modules = ["platform_utils", "playlist_run_qt", "playlist_run", "spotify_handler"] 
