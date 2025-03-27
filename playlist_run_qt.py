@@ -1,11 +1,11 @@
 import sys
 import os
-from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, 
+from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, 
                             QHBoxLayout, QGridLayout, QLabel, QLineEdit, 
                             QPushButton, QProgressBar, QTextEdit, QFileDialog,
                             QFrame, QMessageBox, QDialog)
-from PyQt6.QtCore import Qt, QThread, pyqtSignal, QSize
-from PyQt6.QtGui import QFont, QPalette, QColor, QIcon
+from PyQt5.QtCore import Qt, QThread, pyqtSignal, QSize
+from PyQt5.QtGui import QFont, QPalette, QColor, QIcon
 import yt_dlp
 import platform
 import spotify_handler
@@ -532,8 +532,11 @@ class MainWindow(QMainWindow):
         
         # Progress bar
         self.progress_bar = QProgressBar()
+        self.progress_bar.setFormat("%p% - %v of %m tasks")
         self.progress_bar.setTextVisible(True)
-        self.progress_bar.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.progress_bar.setAlignment(Qt.AlignCenter)
+        self.progress_bar.setMinimum(0)
+        self.progress_bar.setMaximum(100)
         
         # Log text area
         self.log_text = QTextEdit()
@@ -558,7 +561,7 @@ class MainWindow(QMainWindow):
         button_layout.addWidget(self.download_button)
         button_layout.addWidget(self.cancel_button)
         button_layout.addWidget(self.spotify_setup_button)
-        button_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        button_layout.setAlignment(Qt.AlignCenter)
         
         # Add widgets to layout
         layout.addWidget(youtube_label)

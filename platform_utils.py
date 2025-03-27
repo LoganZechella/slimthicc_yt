@@ -74,7 +74,7 @@ def get_app_data_dir():
 
 def configure_gui_for_platform():
     """Apply platform-specific GUI settings"""
-    from PyQt6.QtWidgets import QApplication
+    from PyQt5.QtWidgets import QApplication
     
     app = QApplication.instance()
     if app is None:
