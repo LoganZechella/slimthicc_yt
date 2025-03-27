@@ -10,6 +10,7 @@ import yt_dlp
 import platform
 import spotify_handler
 import json
+import platform_utils  # Import our platform utilities
 
 class SpotifyCredentialsDialog(QDialog):
     def __init__(self, parent=None, saved_credentials=None):
@@ -180,10 +181,8 @@ class DownloadWorker(QThread):
         self.is_cancelled = False
 
     def get_ffmpeg_path(self):
-        base_path = os.path.dirname(os.path.abspath(__file__))
-        if platform.machine() == 'arm64':
-            return os.path.join(base_path, 'ffmpeg_bin', 'arm64', 'ffmpeg')
-        return os.path.join(base_path, 'ffmpeg_bin', 'x86_64', 'ffmpeg')
+        # Use platform utils for ffmpeg path
+        return platform_utils.get_ffmpeg_path()
 
     def download_video(self, url, title):
         def progress_hook(d):
@@ -379,12 +378,17 @@ class DownloadWorker(QThread):
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Playlist Downloader")
-        self.setMinimumSize(1000, 800)
+        self.setWindowTitle("Slim Thicc Command Center")
+        self.setMinimumSize(800, 600)
         self.credentials_file = os.path.expanduser('~/.spotify_credentials.json')
         self.spotify_credentials = self.load_spotify_credentials()
-        self.setup_ui()
+        self.download_worker = None
         self.setup_styling()
+        self.setup_ui()
+        self.center_window()
+        
+        # Apply platform-specific GUI settings
+        platform_utils.configure_gui_for_platform()
 
     def load_spotify_credentials(self):
         try:
@@ -571,11 +575,16 @@ class MainWindow(QMainWindow):
         self.center_window()
         
     def center_window(self):
-        frame = self.frameGeometry()
-        screen = QApplication.primaryScreen()
-        center_point = screen.availableGeometry().center()
-        frame.moveCenter(center_point)
-        self.move(frame.topLeft())
+        # Center window on screen, with special handling for Raspberry Pi
+        if platform_utils.is_raspberry_pi():
+            # On Raspberry Pi, maximize the window for better touchscreen usage
+            self.showMaximized()
+        else:
+            # Regular window centering for other platforms
+            screen_geometry = QApplication.primaryScreen().geometry()
+            x = (screen_geometry.width() - self.width()) // 2
+            y = (screen_geometry.height() - self.height()) // 2
+            self.move(x, y)
         
     def cancel_download(self):
         if hasattr(self, 'worker') and self.worker is not None:
@@ -629,13 +638,11 @@ class MainWindow(QMainWindow):
         self.worker = None
 
     def browse_directory(self):
-        dir_path = QFileDialog.getExistingDirectory(
-            self, "Select Download Directory",
-            os.path.expanduser("~"),
-            QFileDialog.Option.ShowDirsOnly
-        )
-        if dir_path:
-            self.dir_input.setText(dir_path)
+        # Use platform-specific default directory
+        default_dir = platform_utils.get_app_data_dir()
+        directory = QFileDialog.getExistingDirectory(self, "Select Download Directory", default_dir)
+        if directory:  # Only update if a directory was selected
+            self.dir_input.setText(directory)
 
     def log_message(self, message):
         self.log_text.append(message)

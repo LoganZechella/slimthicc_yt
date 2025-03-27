@@ -7,21 +7,15 @@ import tkinter as tk
 from tkinter import filedialog, messagebox
 from tkinter import ttk
 import platform
-
-import spotify_handler  # Import our new Spotify handler
+import spotify_handler  # Import our Spotify handler
+import platform_utils  # Import our platform utilities
 
 def get_base_path():
-    if getattr(sys, 'frozen', False):
-        return sys._MEIPASS
-    return os.path.dirname(os.path.abspath(__file__))
+    return platform_utils.get_base_path()
 
 # Specify the path to the local ffmpeg binary
 def get_ffmpeg_path():
-    base_path = get_base_path()
-    if platform.machine() == 'arm64':
-        return os.path.join(base_path, 'ffmpeg_bin', 'arm64', 'ffmpeg')
-    else:
-        return os.path.join(base_path, 'ffmpeg_bin', 'x86_64', 'ffmpeg')
+    return platform_utils.get_ffmpeg_path()
 
 ffmpeg_path = get_ffmpeg_path()
 
@@ -160,7 +154,9 @@ def start_download():
     threading.Thread(target=process_download, args=(youtube_url, spotify_url, download_dir), daemon=True).start()
 
 def browse_directory():
-    folder_selected = filedialog.askdirectory()
+    # Use platform-specific default directory
+    default_dir = platform_utils.get_app_data_dir()
+    folder_selected = filedialog.askdirectory(initialdir=default_dir)
     if folder_selected:  # Only update if a folder was selected
         dir_entry.delete(0, tk.END)
         dir_entry.insert(0, folder_selected)
@@ -176,16 +172,28 @@ root.attributes("-alpha", 0.0)
 # Set up the style for a dark look with green accents.
 style = ttk.Style()
 style.theme_use("clam")
-default_font = ("Helvetica", 16)  # Increased font size
-large_font = ("Helvetica", 18, "bold")  # For headers
-button_font = ("Helvetica", 16, "bold")  # For buttons
 
-# Configure primary colors
+# Configure primary colors - adjust colors for better visibility on Raspberry Pi if needed
 bg_color = "#121212"            # dark background
 fg_color = "#FFFFFF"            # white text
 entry_bg = "#2c2c2c"            # dark entry background
-accent_color = "#1DB954"        # spotify-inspired green
-accent_hover = "#1ED760"        # lighter green on hover
+
+# Check if running on Raspberry Pi and adjust accordingly
+if platform_utils.is_raspberry_pi():
+    # Adjust font sizes and button sizes for Raspberry Pi touchscreens
+    default_font = ("Helvetica", 14)  # Slightly smaller for Pi screens
+    large_font = ("Helvetica", 16, "bold")  
+    button_font = ("Helvetica", 14, "bold")
+    # Adjust accent color for better contrast on Pi displays
+    accent_color = "#22CC66"    # brighter green for better visibility
+    accent_hover = "#25DD70"    # brighter hover for Pi screens
+else:
+    # Regular settings for other platforms
+    default_font = ("Helvetica", 16)  # Increased font size
+    large_font = ("Helvetica", 18, "bold")  # For headers
+    button_font = ("Helvetica", 16, "bold")  # For buttons
+    accent_color = "#1DB954"    # spotify-inspired green
+    accent_hover = "#1ED760"    # lighter green on hover
 
 # Configure ttk widget styles
 style.configure("Title.TLabel", 
