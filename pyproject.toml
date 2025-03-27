@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=61.0.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "slimthicc_yt"
+version = "0.1.0"
+description = "YouTube and Spotify playlist downloader"
+readme = "README.md"
+requires-python = ">=3.7"
+license = {text = "MIT"}
+authors = [
+    {name = "SlimThicc Developer"}
+]
+dependencies = [
+    "yt-dlp",
+    "PyQt5",
+    "spotipy",
+    "requests",
+    "mutagen",
+    "pydub",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pyinstaller",
+]
+
+[tool.setuptools]
+packages = ["platform_utils"] 
